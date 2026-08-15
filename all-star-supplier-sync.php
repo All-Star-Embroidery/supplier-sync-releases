@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: All Star Supplier Sync
- * Description: Curated supplier-to-WooCommerce synchronization framework. SanMar and S&S Activewear connectors included, with Momentec API groundwork.
- * Version: 2.0.5
+ * Description: Curated supplier-to-WooCommerce synchronization framework. SanMar, S&S Activewear, and Momentec production supplier connectors with GitHub Actions bridge synchronization.
+ * Version: 2.0.6
  * Author: All Star
  * Update URI: https://github.com/rolejarczyk/ASE.SupplierSync-Releases
  * Requires at least: 6.4
@@ -13,7 +13,7 @@
 
 if (!defined('ABSPATH')) exit;
 
-define('ASSS_VERSION', '2.0.5');
+define('ASSS_VERSION', '2.0.6');
 define('ASSS_FILE', __FILE__);
 define('ASSS_DIR', plugin_dir_path(__FILE__));
 define('ASSS_URL', plugin_dir_url(__FILE__));
@@ -66,9 +66,9 @@ final class ASSS_Plugin {
         $this->ss = new ASSS_SS();
         $this->momentec = new ASSS_Momentec();
         $this->multi = new ASSS_MultiSupplier($this->sanmar);
-        $this->importer = new ASSS_Importer($this->sanmar, $this->ss, $this->multi);
+        $this->importer = new ASSS_Importer($this->sanmar, $this->ss, $this->momentec, $this->multi);
         $this->sync = new ASSS_Sync($this->sanmar, $this->importer, $this->multi);
-        $this->bridge = new ASSS_Bridge($this->sanmar, $this->ss, $this->sync);
+        $this->bridge = new ASSS_Bridge($this->sanmar, $this->ss, $this->momentec, $this->sync);
         $this->updater = new ASSS_Updater($this->sanmar, ASSS_FILE);
         $this->admin = new ASSS_Admin($this->sanmar, $this->ss, $this->momentec, $this->importer, $this->sync, $this->multi, $this->updater);
         $this->reconcile_fallback_schedules();
@@ -201,11 +201,6 @@ final class ASSS_Plugin {
             'github_update_repo' => 'rolejarczyk/ASE.SupplierSync-Releases',
             'github_auto_updates' => 0,
             'momentec_enabled' => 0,
-            'momentec_api_base' => '',
-            'momentec_account' => '',
-            'momentec_username' => '',
-            'momentec_api_key' => '',
-            'momentec_environment' => 'staging',
         ];
         if (!get_option('asss_settings')) add_option('asss_settings', $defaults, '', false);
         ASSS_Logger::install();

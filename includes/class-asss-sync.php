@@ -603,4 +603,134 @@ class ASSS_Sync {
         if(is_wp_error($result)) return ['ok'=>0,'fail'=>1];
         return ['ok'=>(int)$result['matched'],'fail'=>0];
     }
+
+    public function queue_momentec_style_product_sync(string $style): array {
+        $ids = [];
+        foreach ($this->linked_product_ids(false, 'momentec') as $id) {
+            if (strcasecmp((string)get_post_meta($id, '_asss_momentec_style', true), $style) === 0) $ids[] = (int)$id;
+        }
+        $result = $this->queue_product_repairs($ids);
+        ASSS_Logger::log('Momentec style product repairs queued', 'info', ['style'=>$style,'queued'=>$result['queued'],'skipped'=>$result['skipped']]);
+        return $result;
+    }
+
+    public function momentec_product_targets(): array {
+        $out = [];
+        foreach ($this->linked_product_ids(false, 'momentec') as $product_id) {
+            $style = trim((string)get_post_meta($product_id, '_asss_momentec_style', true));
+            if ($style === '') continue;
+            $key = strtolower($style);
+            if (!isset($out[$key])) $out[$key] = ['style'=>$style,'product_ids'=>[]];
+            $out[$key]['product_ids'][] = (int)$product_id;
+        }
+        foreach ($out as &$row) $row['product_ids'] = array_values(array_unique(array_map('intval', $row['product_ids'])));
+        unset($row);
+        return array_values($out);
+    }
+
+    public function inventory_targets_momentec(): array {
+        $targets = [];
+        foreach ($this->linked_product_ids(false, 'momentec') as $parent_id) {
+            $parent = wc_get_product($parent_id);
+            if (!$parent instanceof WC_Product_Variable) continue;
+            $ids = get_posts([
+                'post_type'=>'product_variation','post_status'=>['publish','private','draft','pending'],
+                'post_parent'=>$parent_id,'fields'=>'ids','posts_per_page'=>-1,'no_found_rows'=>true,
+            ]);
+            foreach ($ids as $variation_id) {
+                $v = wc_get_product((int)$variation_id);
+                if (!$v instanceof WC_Product_Variation) continue;
+                $sources = $this->multi->variation_sources((int)$variation_id);
+                if (empty($sources['momentec']['enabled'])) continue;
+                if ((string)$v->get_meta('_asss_stale_variation') === 'yes' || (string)$v->get_meta('_asss_discontinued_variation') === 'yes') continue;
+                if ($v->get_status('edit') !== 'publish') continue;
+                $src = $sources['momentec'];
+                $sku = trim((string)($src['sku'] ?? $src['unique_key'] ?? $v->get_meta('_asss_momentec_sku')));
+                if ($sku === '') continue;
+                $targets[] = [
+                    'variation_id'=>(int)$variation_id,'product_id'=>(int)$parent_id,'sku'=>$sku,
+                    'style'=>(string)get_post_meta($parent_id, '_asss_momentec_style', true),
+                    'color'=>(string)($src['color'] ?? $v->get_meta('_asss_momentec_color')),
+                    'size'=>(string)($src['size'] ?? $v->get_meta('_asss_momentec_size')),
+                ];
+            }
+        }
+        return $targets;
+    }
+
+    /** Strict all-or-nothing Momentec inventory apply. Missing rows never mean zero. */
+    public function apply_momentec_inventory_payload(array $rows, array $meta=[]): array {
+        $targets = $this->inventory_targets_momentec();
+        if (!$targets) return new WP_Error('no_inventory_targets', 'No linked active Momentec variations are available for inventory sync.');
+        $by_id = [];
+        foreach ($targets as $target) $by_id[(int)$target['variation_id']] = $target;
+        $expected_ids = array_keys($by_id); sort($expected_ids, SORT_NUMERIC);
+        $prepared = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) return new WP_Error('invalid_inventory_row', 'Momentec inventory payload contains a non-object row.', ['status'=>400]);
+            $vid = absint($row['variation_id'] ?? 0);
+            if (!$vid || !isset($by_id[$vid])) return new WP_Error('unexpected_inventory_target', 'Momentec inventory payload contains a non-active variation: ' . $vid, ['status'=>409]);
+            if (isset($prepared[$vid])) return new WP_Error('duplicate_inventory_target', 'Momentec inventory payload contains duplicate variation #' . $vid . '.', ['status'=>409]);
+            $target = $by_id[$vid];
+            $sku = sanitize_text_field((string)($row['sku'] ?? ''));
+            if ($sku === '' || strcasecmp((string)$target['sku'], $sku) !== 0) return new WP_Error('inventory_identity_mismatch', 'Momentec SKU mismatch for Woo variation #' . $vid . '.', ['status'=>409]);
+            $raw_qty = $row['quantity'] ?? null;
+            if ($raw_qty === null || $raw_qty === '' || !is_numeric($raw_qty)) return new WP_Error('invalid_inventory_quantity', 'Momentec inventory quantity is missing/non-numeric for Woo variation #' . $vid . '.', ['status'=>400]);
+            $prepared[$vid] = [
+                'quantity'=>max(0,(int)$raw_qty),
+                'availability'=>sanitize_text_field((string)($row['availability'] ?? '')),
+                'availability_date'=>sanitize_text_field((string)($row['availability_date'] ?? $row['availabilityDate'] ?? '')),
+            ];
+        }
+        $received_ids = array_keys($prepared); sort($received_ids, SORT_NUMERIC);
+        if ($expected_ids !== $received_ids) return new WP_Error('incomplete_inventory_coverage', 'Momentec inventory coverage changed before apply. No stock was changed.', ['status'=>409]);
+        $declared = absint($meta['target_count'] ?? 0);
+        if ($declared && $declared !== count($expected_ids)) return new WP_Error('inventory_target_count_changed', 'Momentec target count changed before apply. No stock was changed.', ['status'=>409]);
+
+        $objects = [];
+        foreach ($prepared as $vid=>$incoming) {
+            $v = wc_get_product((int)$vid);
+            if (!$v instanceof WC_Product_Variation || empty($this->multi->variation_sources((int)$vid)['momentec']['enabled'])) {
+                return new WP_Error('inventory_target_changed', 'Momentec variation #' . (int)$vid . ' changed before inventory apply. No stock was changed.', ['status'=>409]);
+            }
+            $objects[(int)$vid] = $v;
+        }
+
+        $settings = $this->sanmar->settings();
+        $buffer = max(0, (int)($settings['stock_buffer'] ?? 0));
+        $matched=0; $changed=0; $unchanged=0; $parents=[];
+        foreach ($prepared as $vid=>$incoming) {
+            $v = $objects[(int)$vid];
+            $supplier_qty = (int)$incoming['quantity'];
+            $before = (int)$v->get_stock_quantity(); $before_status = (string)$v->get_stock_status();
+            $result = $this->multi->set_source_inventory((int)$vid, 'momentec', $supplier_qty, [], [
+                'source'=>sanitize_text_field((string)($meta['source'] ?? 'momentec-v2-production-inventory')),
+                'availability'=>$incoming['availability'],'availability_date'=>$incoming['availability_date'],
+            ]);
+            $v = wc_get_product((int)$vid);
+            $qty = (int)($result['quantity'] ?? max(0,$supplier_qty-$buffer));
+            $after_status = $qty > 0 ? 'instock' : 'outofstock';
+            if ($v instanceof WC_Product_Variation) {
+                $v->update_meta_data('_asss_supplier_inventory_qty', $supplier_qty);
+                $v->update_meta_data('_asss_inventory_source', sanitize_text_field((string)($meta['source'] ?? 'momentec-v2-production-inventory')));
+                $v->update_meta_data('_asss_momentec_availability', $incoming['availability']);
+                $v->update_meta_data('_asss_momentec_availability_date', $incoming['availability_date']);
+                $v->save();
+            }
+            $matched++;
+            if ($before !== $qty || $before_status !== $after_status) $changed++; else $unchanged++;
+            $parents[$v->get_parent_id()] = 1;
+        }
+        foreach (array_keys($parents) as $parent_id) if ($parent_id > 0) { WC_Product_Variable::sync((int)$parent_id); wc_delete_product_transients((int)$parent_id); }
+        $status = [
+            'received_at'=>current_time('mysql'),'source'=>sanitize_text_field((string)($meta['source'] ?? 'momentec-v2-production-inventory')),
+            'source_timestamp'=>sanitize_text_field((string)($meta['source_timestamp'] ?? '')),
+            'target_count'=>count($targets),'api_requests'=>absint($meta['api_requests'] ?? 0),
+            'rows_received'=>count($rows),'matched'=>$matched,'changed'=>$changed,'unchanged'=>$unchanged,'unmatched'=>0,'stock_buffer'=>$buffer,
+        ];
+        update_option('asss_momentec_inventory_bridge_status', $status, false);
+        ASSS_Logger::log('Momentec GitHub inventory bridge sync complete', 'info', $status);
+        return ['rows_received'=>count($rows),'matched'=>$matched,'changed'=>$changed,'unchanged'=>$unchanged,'unmatched'=>0,'stock_buffer'=>$buffer,'message'=>'Momentec inventory updates applied to exact linked WooCommerce variations.'];
+    }
+
 }

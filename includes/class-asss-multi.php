@@ -393,7 +393,7 @@ class ASSS_MultiSupplier {
                 '_asss_supplier_category_ids_ss','_asss_supplier_categories_ss',
             ];
         } elseif ($supplier === 'momentec') {
-            $keys = ['_asss_momentec_brand','_asss_momentec_brand_id','_asss_momentec_style','_asss_momentec_style_id','_asss_momentec_color_selection_mode','_asss_momentec_selected_colors','_asss_supplier_category_ids_momentec','_asss_supplier_categories_momentec'];
+            $keys = ['_asss_momentec_brand','_asss_momentec_brand_id','_asss_momentec_style','_asss_momentec_style_id','_asss_momentec_specs','_asss_momentec_color_selection_mode','_asss_momentec_selected_colors','_asss_supplier_category_ids_momentec','_asss_supplier_categories_momentec'];
         } else {
             $keys = [
                 '_asss_sanmar_brand','_asss_sanmar_style','_asss_sanmar_color_selection_mode','_asss_sanmar_selected_colors',
@@ -411,7 +411,7 @@ class ASSS_MultiSupplier {
                 '_asss_ss_case_qty','_asss_ss_case_weight_lb','_asss_ss_case_dimensions','_asss_ss_warehouses','_asss_ss_inventory_warehouses','_asss_inventory_ss_qty',
             ];
         } elseif ($supplier === 'momentec') {
-            $keys = ['_asss_momentec_sku','_asss_momentec_sku_id','_asss_momentec_gtin','_asss_momentec_color','_asss_momentec_size','_asss_momentec_cost','_asss_momentec_map_price','_asss_momentec_retail_price','_asss_momentec_warehouses','_asss_inventory_momentec_qty'];
+            $keys = ['_asss_momentec_sku','_asss_momentec_sku_id','_asss_momentec_gtin','_asss_momentec_color','_asss_momentec_size','_asss_momentec_cost','_asss_momentec_map_price','_asss_momentec_retail_price','_asss_momentec_warehouses','_asss_momentec_availability','_asss_momentec_availability_date','_asss_inventory_momentec_qty'];
         } else {
             $keys = [
                 '_asss_sanmar_style','_asss_sanmar_brand','_asss_sanmar_unique_key','_asss_sanmar_inventory_key','_asss_sanmar_size_index','_asss_sanmar_color',
@@ -447,7 +447,7 @@ class ASSS_MultiSupplier {
         $cost = $source['cost'] ?? $source['customer_price'] ?? '';
         if ($cost !== '') update_post_meta($variation_id, '_asss_supplier_cost', (string)$cost); else delete_post_meta($variation_id, '_asss_supplier_cost');
         if ($map !== '') update_post_meta($variation_id, '_asss_map_price', (string)$map); else delete_post_meta($variation_id, '_asss_map_price');
-        if ($chosen === 'ss') {
+        if (in_array($chosen, ['ss','momentec'], true)) {
             $retail = $source['retail_price'] ?? '';
             if ($retail !== '') update_post_meta($variation_id, '_asss_suggested_retail_price', (string)$retail);
         }

@@ -4,7 +4,7 @@ Tags: woocommerce, supplier, inventory, sanmar, ssactivewear, github-actions
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 2.0.5
+Stable tag: 2.0.6
 License: Proprietary
 
 Curated multi-supplier-to-WooCommerce synchronization for All Star. SanMar and S&S Activewear connectors included.
@@ -40,6 +40,18 @@ Core V2 behavior:
 6. Use Suppliers -> Add Products to import new styles or explicitly link a second supplier to an existing Brand + Style product.
 
 == Changelog ==
+
+= 2.0.6 =
+* Momentec production v2 is now a live Supplier Sync connector using WordPress <> GitHub Actions <> Momentec.
+* Added secure normalized Momentec style cache; supplier credentials remain only in GitHub Actions Secrets.
+* Added intentional style publishing because Momentec v2 does not expose a full catalog-list endpoint.
+* Added Momentec Add Products browser, review screen, exact-color selection, new-product import, and existing-product linking.
+* Added exact sparse Momentec Color+Size variation creation with no Cartesian combinations.
+* Added Momentec customer-cost pricing integration using the existing preferred-supplier cost + $20 pricing rules while preserving manual overrides.
+* Added color-specific variation galleries sourced from full-SKU Momentec v2 Style lookups.
+* Added strict targeted Momentec inventory bridge endpoints and multi-supplier inventory support.
+* Added Momentec Quick Repair and multi-supplier repair support from the normalized cache.
+
 
 = 2.0.5 =
 * Momentec now follows the project architecture: WordPress <> GitHub Actions <> supplier.

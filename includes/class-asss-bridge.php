@@ -4,11 +4,13 @@ if (!defined('ABSPATH')) exit;
 class ASSS_Bridge {
     private ASSS_SanMar $sanmar;
     private ASSS_SS $ss;
+    private ASSS_Momentec $momentec;
     private ASSS_Sync $sync;
 
-    public function __construct(ASSS_SanMar $sanmar, ASSS_SS $ss, ASSS_Sync $sync) {
+    public function __construct(ASSS_SanMar $sanmar, ASSS_SS $ss, ASSS_Momentec $momentec, ASSS_Sync $sync) {
         $this->sanmar = $sanmar;
         $this->ss = $ss;
+        $this->momentec = $momentec;
         $this->sync = $sync;
         $settings = $this->sanmar->settings();
         if (empty($settings['bridge_token'])) {
@@ -96,6 +98,19 @@ class ASSS_Bridge {
             'methods' => 'POST',
             'callback' => [$this, 'receive_ss_inventory'],
             'permission_callback' => [$this, 'authorize'],
+        ]);
+
+        register_rest_route('asss/v1', '/bridge/momentec/style', [
+            'methods' => 'POST', 'callback' => [$this, 'receive_momentec_style'], 'permission_callback' => [$this, 'authorize'],
+        ]);
+        register_rest_route('asss/v1', '/bridge/momentec/product-targets', [
+            'methods' => 'GET', 'callback' => [$this, 'momentec_product_targets'], 'permission_callback' => [$this, 'authorize'],
+        ]);
+        register_rest_route('asss/v1', '/bridge/inventory/momentec/targets', [
+            'methods' => 'GET', 'callback' => [$this, 'momentec_inventory_targets'], 'permission_callback' => [$this, 'authorize'],
+        ]);
+        register_rest_route('asss/v1', '/bridge/inventory/momentec', [
+            'methods' => 'POST', 'callback' => [$this, 'receive_momentec_inventory'], 'permission_callback' => [$this, 'authorize'],
         ]);
 
         register_rest_route('asss/v1', '/bridge/status', [
@@ -416,4 +431,47 @@ class ASSS_Bridge {
             'ss_inventory'=>get_option('asss_ss_inventory_bridge_status', []),
         ], 200);
     }
+
+    public function receive_momentec_style(WP_REST_Request $request) {
+        $payload = $request->get_json_params();
+        if (!is_array($payload)) return new WP_Error('momentec_payload', 'Momentec bridge payload must be JSON.', ['status'=>400]);
+        $product = $payload['product'] ?? $payload;
+        if (!is_array($product)) return new WP_Error('momentec_product', 'Momentec bridge payload is missing product data.', ['status'=>400]);
+        $meta = is_array($payload['meta'] ?? null) ? $payload['meta'] : [];
+        $result = $this->momentec->save_style($product, $meta);
+        if (is_wp_error($result)) return $result;
+        $queued = ['queued'=>0,'skipped'=>0];
+        if (!empty($payload['queue_repairs']) || !empty($meta['queue_repairs'])) {
+            $queued = $this->sync->queue_momentec_style_product_sync((string)$result['style']);
+        }
+        ASSS_Logger::log('Momentec normalized style received from GitHub', 'info', [
+            'style'=>(string)$result['style'],'variants'=>(int)$result['variants'],'queued_repairs'=>(int)($queued['queued'] ?? 0),
+        ]);
+        return rest_ensure_response(['ok'=>true,'supplier'=>'momentec','style'=>$result['style'],'variants'=>$result['variants'],'repair_queue'=>$queued]);
+    }
+
+    public function momentec_product_targets(WP_REST_Request $request) {
+        $targets = $this->sync->momentec_product_targets();
+        return rest_ensure_response(['ok'=>true,'supplier'=>'momentec','count'=>count($targets),'targets'=>$targets]);
+    }
+
+    public function momentec_inventory_targets(WP_REST_Request $request) {
+        $targets = $this->sync->inventory_targets_momentec();
+        return rest_ensure_response(['ok'=>true,'supplier'=>'momentec','count'=>count($targets),'targets'=>$targets]);
+    }
+
+    public function receive_momentec_inventory(WP_REST_Request $request) {
+        $settings = $this->sanmar->settings();
+        if (empty($settings['bridge_inventory_enabled'])) {
+            return new WP_Error('inventory_bridge_disabled', 'GitHub inventory updates are disabled in Supplier Settings.', ['status'=>403]);
+        }
+        $payload = $request->get_json_params();
+        if (!is_array($payload)) return new WP_Error('momentec_inventory_payload', 'Momentec inventory payload must be JSON.', ['status'=>400]);
+        $rows = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
+        $meta = is_array($payload['meta'] ?? null) ? $payload['meta'] : [];
+        $result = $this->sync->apply_momentec_inventory_payload($rows, $meta);
+        if (is_wp_error($result)) return $result;
+        return rest_ensure_response(array_merge(['ok'=>true,'supplier'=>'momentec'], $result));
+    }
+
 }
