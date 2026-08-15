@@ -1,0 +1,16 @@
+recovered name=all-star-supplier-sync/ method=0 compressed=0 size=0 crc_ok=1 size_ok=1
+recovered name=all-star-supplier-sync/includes/ method=0 compressed=0 size=0 crc_ok=1 size_ok=1
+recovered name=all-star-supplier-sync/includes/class-asss-sync.php method=8 compressed=6959 size=33317 crc_ok=1 size_ok=1
+recovered name=all-star-supplier-sync/includes/class-asss-ss.php method=8 compressed=3821 size=15700 crc_ok=1 size_ok=1
+recovered name=all-star-supplier-sync/includes/class-asss-bridge.php method=8 compressed=4173 size=20917 crc_ok=1 size_ok=1
+recovered name=all-star-supplier-sync/includes/class-asss-multi.php method=8 compressed=5030 size=28218 crc_ok=1 size_ok=1
+recovered name=all-star-supplier-sync/includes/class-asss-momentec.php method=8 compressed=801 size=2064 crc_ok=1 size_ok=1
+recovered name=all-star-supplier-sync/includes/class-asss-logger.php method=8 compressed=663 size=1404 crc_ok=1 size_ok=1
+recovered name=all-star-supplier-sync/includes/class-asss-updater.php method=8 compressed=2843 size=10314 crc_ok=1 size_ok=1
+recovered name=all-star-supplier-sync/includes/class-asss-admin.php method=8 compressed=26054 size=116575 crc_ok=1 size_ok=1
+recovered name=all-star-supplier-sync/includes/class-asss-importer.php method=8 compressed=30461 size=155753 crc_ok=0 size_ok=1
+validation_failed name=all-star-supplier-sync/includes/class-asss-importer.php expected_crc=7ebf3292 actual_crc=9e76338f expected_size=155753
+raw_bytes=228882
+final_offset=51398
+files_recovered=8
+failed=1
