@@ -1,6 +1,7 @@
 name: Recover Supplier Sync v2.0.2 Source
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
