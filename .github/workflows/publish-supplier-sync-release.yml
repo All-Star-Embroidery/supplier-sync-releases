@@ -1,0 +1,43 @@
+name: Publish Supplier Sync Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, for example 2.0.3'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release repository
+        uses: actions/checkout@v6
+
+      - name: Validate release package
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          FILE="all-star-supplier-sync-${VERSION}.zip"
+          test -f "$FILE"
+          unzip -t "$FILE"
+          unzip -l "$FILE" | grep -q 'all-star-supplier-sync/all-star-supplier-sync.php'
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          FILE="all-star-supplier-sync-${VERSION}.zip"
+          TAG="v${VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$FILE" --clobber
+          else
+            gh release create "$TAG" "$FILE" --target main --title "$TAG" --generate-notes
+          fi
