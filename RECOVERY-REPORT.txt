@@ -1,0 +1,19 @@
+name=all-star-supplier-sync/ offset=0 next=81 csize=0 usize=0 out=0 crc_ok=1 size_ok=1
+name=all-star-supplier-sync/includes/ offset=81 next=171 csize=0 usize=0 out=0 crc_ok=1 size_ok=1
+name=all-star-supplier-sync/includes/class-asss-sync.php offset=171 next=7239 csize=6959 usize=33317 out=33317 crc_ok=1 size_ok=1
+name=all-star-supplier-sync/includes/class-asss-ss.php offset=7239 next=11167 csize=3821 usize=15700 out=15700 crc_ok=1 size_ok=1
+name=all-star-supplier-sync/includes/class-asss-bridge.php offset=11167 next=15451 csize=4173 usize=20917 out=20917 crc_ok=1 size_ok=1
+name=all-star-supplier-sync/includes/class-asss-multi.php offset=15451 next=20591 csize=5030 usize=28218 out=28218 crc_ok=1 size_ok=1
+name=all-star-supplier-sync/includes/class-asss-momentec.php offset=20591 next=21505 csize=801 usize=2064 out=2064 crc_ok=1 size_ok=1
+name=all-star-supplier-sync/includes/class-asss-logger.php offset=21505 next=22279 csize=663 usize=1404 out=1404 crc_ok=1 size_ok=1
+name=all-star-supplier-sync/includes/class-asss-updater.php offset=22279 next=25234 csize=2843 usize=10314 out=10314 crc_ok=1 size_ok=1
+name=all-star-supplier-sync/includes/class-asss-admin.php offset=25234 next=51398 csize=26054 usize=116575 out=116575 crc_ok=1 size_ok=1
+name=all-star-supplier-sync/includes/class-asss-importer.php offset=51398 next=81972 csize=30461 usize=155753 out=155753 crc_ok=0 size_ok=1
+name=all-star-supplier-sync/includes/class-asss-sanmar.php offset=81972 next=93832 csize=11749 usize=46182 out=46182 crc_ok=1 size_ok=1
+name=all-star-supplier-sync/MOMENTEC-API-GROUNDWORK.md offset=93832 next=94772 csize=833 usize=1535 out=1535 crc_ok=1 size_ok=1
+name=all-star-supplier-sync/readme.txt offset=94772 next=98340 csize=3477 usize=8684 out=8684 crc_ok=1 size_ok=1
+stop decompress name=all-star-supplier-sync/V1-ARCHITECTURE.md error=error:Error -3 while decompressing data: invalid distance too far back
+raw_bytes=228882
+final_offset=98340
+files=12
+crc_or_size_warnings=all-star-supplier-sync/includes/class-asss-importer.php
