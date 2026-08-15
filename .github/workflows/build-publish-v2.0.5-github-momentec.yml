@@ -84,3 +84,5 @@ jobs:
           else
             gh release create v2.0.5 all-star-supplier-sync-2.0.5.zip --target main --title 'All Star Supplier Sync v2.0.5' --notes-file RELEASE-2.0.5.md
           fi
+
+# rerun after resilient source section matching
