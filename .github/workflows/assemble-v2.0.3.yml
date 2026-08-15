@@ -18,65 +18,99 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Diagnose and validate uploaded v2.0.3 ZIP
-        id: validate
+      - name: Reassemble and recover exact uploaded v2.0.3 ZIP
         shell: bash
         run: |
-          set +e
+          set -euo pipefail
           EXPECTED_SHA='39844901328845e81c5442adefe2b542c04081655a6b90fc229535f6586c5af4'
+          RAW='/tmp/all-star-supplier-sync-2.0.3.raw'
           ZIP='all-star-supplier-sync-2.0.3.zip'
-          B64='/tmp/all-star-supplier-sync-2.0.3.b64'
-          DIAG='.release-staging/2.0.3/DIAGNOSTIC.txt'
+          DIAG='.release-staging/2.0.3/RECOVERY-DIAGNOSTIC.txt'
 
-          cat .release-staging/2.0.3/part-*.txt > "$B64"
-          PART_COUNT=$(find .release-staging/2.0.3 -maxdepth 1 -type f -name 'part-*.txt' | wc -l | tr -d ' ')
-          B64_BYTES=$(wc -c < "$B64" | tr -d ' ')
+          cat .release-staging/2.0.3/part-*.txt | base64 --decode > "$RAW"
 
-          base64 --decode "$B64" > "$ZIP" 2>/tmp/base64-error.txt
-          DECODE_RC=$?
-          ACTUAL_SHA=$(sha256sum "$ZIP" 2>/dev/null | awk '{print $1}')
+          EXPECTED_SHA="$EXPECTED_SHA" RAW="$RAW" ZIP="$ZIP" DIAG="$DIAG" python3 - <<'PY'
+          import hashlib, io, os, struct, zipfile
+          from pathlib import Path
 
-          unzip -t "$ZIP" >/tmp/unzip-test.txt 2>&1
-          UNZIP_RC=$?
-          unzip -l "$ZIP" 2>/dev/null | grep -q 'all-star-supplier-sync/all-star-supplier-sync.php'
-          PATH_RC=$?
-          VERSION_LINE=$(unzip -p "$ZIP" all-star-supplier-sync/all-star-supplier-sync.php 2>/dev/null | grep -m1 -E '^[[:space:]]*\*?[[:space:]]*Version:' || true)
+          expected = os.environ['EXPECTED_SHA']
+          raw_path = Path(os.environ['RAW'])
+          zip_path = Path(os.environ['ZIP'])
+          diag_path = Path(os.environ['DIAG'])
+          data = raw_path.read_bytes()
+          marker = b'PK\x05\x06'
+          positions = []
+          start = 0
+          while True:
+              pos = data.find(marker, start)
+              if pos < 0:
+                  break
+              positions.append(pos)
+              start = pos + 1
 
-          HASH_OK=no
-          [[ "$ACTUAL_SHA" == "$EXPECTED_SHA" ]] && HASH_OK=yes
+          lines = [
+              f'raw_bytes={len(data)}',
+              f'raw_sha={hashlib.sha256(data).hexdigest()}',
+              f'eocd_candidates={len(positions)}',
+              f'expected_sha={expected}',
+          ]
+          recovered = None
 
-          {
-            echo "part_count=$PART_COUNT"
-            echo "base64_bytes=$B64_BYTES"
-            echo "decode_rc=$DECODE_RC"
-            echo "expected_sha=$EXPECTED_SHA"
-            echo "actual_sha=$ACTUAL_SHA"
-            echo "hash_ok=$HASH_OK"
-            echo "unzip_rc=$UNZIP_RC"
-            echo "plugin_path_rc=$PATH_RC"
-            echo "version_line=$VERSION_LINE"
-            echo "base64_error=$(tr '\n' ' ' </tmp/base64-error.txt)"
-            echo "unzip_last_line=$(tail -1 /tmp/unzip-test.txt | tr '\n' ' ')"
-          } > "$DIAG"
+          for pos in positions:
+              if pos + 22 > len(data):
+                  continue
+              comment_len = struct.unpack_from('<H', data, pos + 20)[0]
+              end = pos + 22 + comment_len
+              if end > len(data):
+                  continue
+              candidate = data[:end]
+              sha = hashlib.sha256(candidate).hexdigest()
+              valid = False
+              has_plugin = False
+              version_ok = False
+              error = ''
+              try:
+                  with zipfile.ZipFile(io.BytesIO(candidate), 'r') as zf:
+                      bad = zf.testzip()
+                      names = set(zf.namelist())
+                      has_plugin = 'all-star-supplier-sync/all-star-supplier-sync.php' in names
+                      if has_plugin:
+                          plugin = zf.read('all-star-supplier-sync/all-star-supplier-sync.php').decode('utf-8', 'replace')
+                          version_ok = ('Version: 2.0.3' in plugin and "define('ASSS_VERSION', '2.0.3')" in plugin)
+                      valid = bad is None
+              except Exception as exc:
+                  error = f'{type(exc).__name__}: {exc}'
+              lines.append(
+                  f'candidate_pos={pos} end={end} sha={sha} valid={int(valid)} plugin={int(has_plugin)} version={int(version_ok)} error={error}'
+              )
+              if sha == expected and valid and has_plugin and version_ok:
+                  recovered = candidate
+                  break
 
-          if [[ $DECODE_RC -eq 0 && "$HASH_OK" == yes && $UNZIP_RC -eq 0 && $PATH_RC -eq 0 ]]; then
-            echo 'validation_ok=true' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          diag_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          if recovered is None:
+              raise SystemExit('No exact valid v2.0.3 ZIP prefix matched the expected checksum.')
+          zip_path.write_bytes(recovered)
+          print(f'Recovered exact v2.0.3 ZIP: {len(recovered)} bytes, sha256={expected}')
+          PY
 
-          echo 'validation_ok=false' >> "$GITHUB_OUTPUT"
-          exit 1
+          echo "$EXPECTED_SHA  $ZIP" | sha256sum -c -
+          unzip -t "$ZIP" >/dev/null
+          unzip -l "$ZIP" | grep -q 'all-star-supplier-sync/all-star-supplier-sync.php'
+          unzip -p "$ZIP" all-star-supplier-sync/all-star-supplier-sync.php | grep -q 'Version: 2.0.3'
 
-      - name: Commit diagnostic on validation failure
+      - name: Commit recovery diagnostic on validation failure
         if: failure()
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .release-staging/2.0.3/DIAGNOSTIC.txt
-          git commit -m 'ci: record v2.0.3 assembly diagnostic' || true
-          git push origin main
+          if [[ -f .release-staging/2.0.3/RECOVERY-DIAGNOSTIC.txt ]]; then
+            git add .release-staging/2.0.3/RECOVERY-DIAGNOSTIC.txt
+            git commit -m 'ci: record v2.0.3 recovery diagnostic' || true
+            git push origin main
+          fi
 
       - name: Commit package and remove temporary staging
         if: success()
