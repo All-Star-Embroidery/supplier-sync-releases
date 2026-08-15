@@ -110,12 +110,12 @@ if old_purge not in text:
     raise SystemExit('Expected v2.0.4 credential purge was not found.')
 text = text.replace(old_purge, new_purge, 1)
 
-start_marker = "        echo '<hr><h2>Momentec Brands API (groundwork)</h2>"
-end_marker = "        echo '<hr><h2>Direct Supplier File Connection (optional / fallback)</h2>"
-start = text.find(start_marker)
-end = text.find(end_marker, start)
-if start < 0 or end < 0:
-    raise SystemExit('Could not locate the v2.0.4 Momentec settings UI block.')
+start_match = re.search(r"(?m)^\s*echo '<hr><h2>Momentec[^\n]*$", text)
+end_match = re.search(r"(?m)^\s*echo '<hr><h2>Direct Supplier File Connection[^\n]*$", text)
+if not start_match or not end_match or end_match.start() <= start_match.start():
+    raise SystemExit('Could not locate the v2.0.4 Momentec settings section boundaries.')
+start = start_match.start()
+end = end_match.start()
 
 new_ui = """        echo '<hr><h2>Momentec Brands via GitHub bridge</h2><p><strong>Architecture:</strong> WordPress &harr; GitHub Actions &harr; Momentec. WordPress does not store, read, or receive the Momentec username/password. GitHub authenticates with Momentec and sends only normalized supplier data through the existing authenticated Supplier Sync bridge.</p><table class=\"form-table\">';
         echo $this->check('Enable Momentec supplier bridge', 'momentec_enabled', $s['momentec_enabled'] ?? 0);
