@@ -174,3 +174,5 @@ jobs:
           git add -A
           git commit -m 'Recover Supplier Sync v2.0.3 source from local ZIP records'
           git push --force origin "$BRANCH"
+
+# trigger: recover exact source records after staging truncation
