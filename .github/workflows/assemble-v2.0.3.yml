@@ -1,0 +1,42 @@
+name: Assemble exact Supplier Sync v2.0.3 package
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.release-staging/2.0.3/READY'
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+
+      - name: Reassemble exact uploaded v2.0.3 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .release-staging/2.0.3/part-*.txt | base64 --decode > all-star-supplier-sync-2.0.3.zip
+          echo '39844901328845e81c5442adefe2b542c04081655a6b90fc229535f6586c5af4  all-star-supplier-sync-2.0.3.zip' | sha256sum -c -
+          unzip -t all-star-supplier-sync-2.0.3.zip >/dev/null
+          unzip -l all-star-supplier-sync-2.0.3.zip | grep -q 'all-star-supplier-sync/all-star-supplier-sync.php'
+
+      - name: Commit package and remove temporary staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -rf .release-staging/2.0.3
+          rm -f .github/workflows/assemble-v2.0.3.yml
+          rm -f .github/workflows/recover-v2.0.2-source.yml
+          rm -f .chatgpt-access-test.txt
+          git add -A
+          git commit -m 'release: publish exact All Star Supplier Sync v2.0.3 package'
+          git push origin main
