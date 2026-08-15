@@ -18,16 +18,68 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Reassemble exact uploaded v2.0.3 ZIP
+      - name: Diagnose and validate uploaded v2.0.3 ZIP
+        id: validate
+        shell: bash
+        run: |
+          set +e
+          EXPECTED_SHA='39844901328845e81c5442adefe2b542c04081655a6b90fc229535f6586c5af4'
+          ZIP='all-star-supplier-sync-2.0.3.zip'
+          B64='/tmp/all-star-supplier-sync-2.0.3.b64'
+          DIAG='.release-staging/2.0.3/DIAGNOSTIC.txt'
+
+          cat .release-staging/2.0.3/part-*.txt > "$B64"
+          PART_COUNT=$(find .release-staging/2.0.3 -maxdepth 1 -type f -name 'part-*.txt' | wc -l | tr -d ' ')
+          B64_BYTES=$(wc -c < "$B64" | tr -d ' ')
+
+          base64 --decode "$B64" > "$ZIP" 2>/tmp/base64-error.txt
+          DECODE_RC=$?
+          ACTUAL_SHA=$(sha256sum "$ZIP" 2>/dev/null | awk '{print $1}')
+
+          unzip -t "$ZIP" >/tmp/unzip-test.txt 2>&1
+          UNZIP_RC=$?
+          unzip -l "$ZIP" 2>/dev/null | grep -q 'all-star-supplier-sync/all-star-supplier-sync.php'
+          PATH_RC=$?
+          VERSION_LINE=$(unzip -p "$ZIP" all-star-supplier-sync/all-star-supplier-sync.php 2>/dev/null | grep -m1 -E '^[[:space:]]*\*?[[:space:]]*Version:' || true)
+
+          HASH_OK=no
+          [[ "$ACTUAL_SHA" == "$EXPECTED_SHA" ]] && HASH_OK=yes
+
+          {
+            echo "part_count=$PART_COUNT"
+            echo "base64_bytes=$B64_BYTES"
+            echo "decode_rc=$DECODE_RC"
+            echo "expected_sha=$EXPECTED_SHA"
+            echo "actual_sha=$ACTUAL_SHA"
+            echo "hash_ok=$HASH_OK"
+            echo "unzip_rc=$UNZIP_RC"
+            echo "plugin_path_rc=$PATH_RC"
+            echo "version_line=$VERSION_LINE"
+            echo "base64_error=$(tr '\n' ' ' </tmp/base64-error.txt)"
+            echo "unzip_last_line=$(tail -1 /tmp/unzip-test.txt | tr '\n' ' ')"
+          } > "$DIAG"
+
+          if [[ $DECODE_RC -eq 0 && "$HASH_OK" == yes && $UNZIP_RC -eq 0 && $PATH_RC -eq 0 ]]; then
+            echo 'validation_ok=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo 'validation_ok=false' >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Commit diagnostic on validation failure
+        if: failure()
         shell: bash
         run: |
           set -euo pipefail
-          cat .release-staging/2.0.3/part-*.txt | base64 --decode > all-star-supplier-sync-2.0.3.zip
-          echo '39844901328845e81c5442adefe2b542c04081655a6b90fc229535f6586c5af4  all-star-supplier-sync-2.0.3.zip' | sha256sum -c -
-          unzip -t all-star-supplier-sync-2.0.3.zip >/dev/null
-          unzip -l all-star-supplier-sync-2.0.3.zip | grep -q 'all-star-supplier-sync/all-star-supplier-sync.php'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .release-staging/2.0.3/DIAGNOSTIC.txt
+          git commit -m 'ci: record v2.0.3 assembly diagnostic' || true
+          git push origin main
 
       - name: Commit package and remove temporary staging
+        if: success()
         shell: bash
         run: |
           set -euo pipefail
