@@ -1,0 +1,47 @@
+name: Recover Supplier Sync v2.0.5 Exact Source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recover-v2.0.5-exact-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out release repo
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download and verify exact v2.0.5 release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download v2.0.5 --pattern 'all-star-supplier-sync-2.0.5.zip' --dir /tmp
+          echo 'e9f00a101eed29cec75c8fb567c1a6eaea3024dcef9ebf7b60f7e07b29a463aa  /tmp/all-star-supplier-sync-2.0.5.zip' | sha256sum -c -
+          rm -rf /tmp/v205-source
+          mkdir -p /tmp/v205-source
+          unzip -q /tmp/all-star-supplier-sync-2.0.5.zip -d /tmp/v205-source
+          test -f /tmp/v205-source/all-star-supplier-sync/all-star-supplier-sync.php
+          grep -q 'Version: 2.0.5' /tmp/v205-source/all-star-supplier-sync/all-star-supplier-sync.php
+
+      - name: Publish exact source branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch --orphan recovery/v2.0.5-exact-source
+          git rm -rf . >/dev/null 2>&1 || true
+          cp -a /tmp/v205-source/all-star-supplier-sync/. .
+          git add -A
+          git commit -m 'Recover exact Supplier Sync v2.0.5 source from release asset'
+          git push --force origin recovery/v2.0.5-exact-source
