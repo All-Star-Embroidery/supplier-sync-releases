@@ -1,0 +1,4 @@
+ChatGPT GitHub access test
+Repository: rolejarczyk/ASE.SupplierSync-Releases
+Purpose: verify read/write access from ChatGPT GitHub connector.
+Safe to delete.
