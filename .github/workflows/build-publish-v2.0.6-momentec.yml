@@ -31,6 +31,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Existing Supplier Sync REST namespace is asss/v1. Normalize the one-off
+          # release patch template before applying it to the exact 2.0.5 source.
+          sed -i 's#all-star-supplier-sync/v1#asss/v1#g' release/release-tools/v206_patch_core.py
           python3 release/release-tools/v206_patch_core.py source
           python3 release/release-tools/v206_patch_importer.py source
           python3 release/release-tools/v206_patch_admin.py source
@@ -45,13 +48,12 @@ jobs:
           grep -q "define('ASSS_VERSION', '2.0.6')" source/all-star-supplier-sync.php
           grep -q "new ASSS_Importer(\$this->sanmar, \$this->ss, \$this->momentec, \$this->multi)" source/all-star-supplier-sync.php
           grep -q "new ASSS_Bridge(\$this->sanmar, \$this->ss, \$this->momentec, \$this->sync)" source/all-star-supplier-sync.php
-          grep -q '/bridge/momentec/style' source/includes/class-asss-bridge.php
-          grep -q '/bridge/inventory/momentec/targets' source/includes/class-asss-bridge.php
+          grep -q "register_rest_route('asss/v1', '/bridge/momentec/style'" source/includes/class-asss-bridge.php
+          grep -q "register_rest_route('asss/v1', '/bridge/inventory/momentec/targets'" source/includes/class-asss-bridge.php
           grep -q 'apply_momentec_inventory_payload' source/includes/class-asss-sync.php
           grep -q 'import_momentec_style' source/includes/class-asss-importer.php
           grep -q 'link_momentec_style_to_product' source/includes/class-asss-importer.php
           grep -q 'momentec_review_page' source/includes/class-asss-admin.php
-          grep -q 'sparse-exact-supplier-rows' ../ASE.SupplierSync-Releases/release/../source/../source/../source/nonexistent 2>/dev/null && exit 1 || true
           ! grep -R -q 'ASSS_MOMENTEC_USERNAME\|ASSS_MOMENTEC_PASSWORD' source
           ! grep -R -q 'name="momentec_username"\|name="momentec_password"\|name="momentec_api_key"' source
           ! grep -R -q 'stage-api.momentecbrands.com\|momentec_environment.*staging' source
@@ -74,7 +76,6 @@ jobs:
             text=Path(file).read_text(encoding='utf-8')
             for needle in needles:
               if needle not in text: raise SystemExit(f'Missing {needle!r} in {file}')
-          # No supplier credential VALUES or credential-reading code belongs in the plugin.
           text='\n'.join(p.read_text(encoding='utf-8',errors='ignore') for p in Path('source').rglob('*') if p.is_file())
           for forbidden in ['getenv(\'MOMENTEC_', 'constant(\'MOMENTEC_', 'MOMENTEC_PASSWORD:', 'MOMENTEC_USERNAME:']:
             if forbidden in text: raise SystemExit(f'Forbidden Momentec credential handling found: {forbidden}')
