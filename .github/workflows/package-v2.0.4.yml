@@ -1,0 +1,67 @@
+name: Package Supplier Sync v2.0.4
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/package-v2.0.4.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v5
+        with:
+          path: release
+          fetch-depth: 0
+
+      - name: Checkout exact v2.0.3 source
+        uses: actions/checkout@v5
+        with:
+          ref: recovery/v2.0.3-exact-source
+          path: source
+
+      - name: Apply v2.0.4 security patch
+        run: python3 "$GITHUB_WORKSPACE/release/release-tools/secure_momentec_v204.py" "$GITHUB_WORKSPACE/source"
+
+      - name: Validate plugin source
+        shell: bash
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE/source" -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+          grep -q 'Version: 2.0.4' "$GITHUB_WORKSPACE/source/all-star-supplier-sync.php"
+          grep -q "define('ASSS_VERSION', '2.0.4')" "$GITHUB_WORKSPACE/source/all-star-supplier-sync.php"
+          grep -q 'ASSS_MOMENTEC_USERNAME' "$GITHUB_WORKSPACE/source/includes/class-asss-momentec.php"
+          grep -q 'ASSS_MOMENTEC_PASSWORD' "$GITHUB_WORKSPACE/source/includes/class-asss-momentec.php"
+          ! grep -q 'name="momentec_username"' "$GITHUB_WORKSPACE/source/includes/class-asss-admin.php"
+          ! grep -q 'name="momentec_api_key"' "$GITHUB_WORKSPACE/source/includes/class-asss-admin.php"
+          ! grep -q 'name="momentec_password"' "$GITHUB_WORKSPACE/source/includes/class-asss-admin.php"
+
+      - name: Build WordPress plugin ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/package"
+          mkdir -p "$GITHUB_WORKSPACE/package/all-star-supplier-sync"
+          rsync -a --exclude='.git' "$GITHUB_WORKSPACE/source/" "$GITHUB_WORKSPACE/package/all-star-supplier-sync/"
+          cd "$GITHUB_WORKSPACE/package"
+          zip -qr "$GITHUB_WORKSPACE/release/all-star-supplier-sync-2.0.4.zip" all-star-supplier-sync
+          cd "$GITHUB_WORKSPACE/release"
+          unzip -t all-star-supplier-sync-2.0.4.zip >/dev/null
+          unzip -p all-star-supplier-sync-2.0.4.zip all-star-supplier-sync/all-star-supplier-sync.php | grep -q 'Version: 2.0.4'
+
+      - name: Commit package to release repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/release"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add all-star-supplier-sync-2.0.4.zip
+          git commit -m 'release: All Star Supplier Sync v2.0.4 secure Momentec credentials'
+          git push origin main
