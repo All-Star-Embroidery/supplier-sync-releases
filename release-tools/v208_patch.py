@@ -26,7 +26,7 @@ text = admin.read_text(encoding='utf-8')
 marker = "        if (!empty($_POST['asss_momentec_queue_styles'])) {\n"
 addition = r'''        if (!empty($_POST['asss_momentec_queue_style'])) {
             check_admin_referer('asss_momentec_catalog');
-            $style=sanitize_text_field(wp_unslash((string)$_POST['asss_momentec_queue_style']);
+            $style=sanitize_text_field(wp_unslash((string)$_POST['asss_momentec_queue_style']));
             if($style===''){
                 wp_safe_redirect(add_query_arg(['page'=>'asss-suppliers','supplier'=>'momentec','asss_err'=>'Invalid Momentec style.'],admin_url('admin.php')));exit;
             }
