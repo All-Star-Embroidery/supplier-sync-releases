@@ -146,7 +146,7 @@ replacement = r'''    private function ss_featured_color_rank(string $color,int 
     }
 
     private function sync_ss_bulk_order_fields'''
-text, count = pattern.subn(replacement, text, count=1)
+text, count = pattern.subn(lambda _m: replacement, text, count=1)
 if count != 1:
     raise SystemExit('Could not patch S&S parent media block')
 imp.write_text(text, encoding='utf-8')
