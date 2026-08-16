@@ -1,0 +1,158 @@
+name: Build and Publish Supplier Sync v2.0.7
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-publish-v2.0.7-momentec-catalog.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout release repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          path: release
+
+      - name: Checkout exact v2.0.6 source
+        uses: actions/checkout@v6
+        with:
+          ref: recovery/v2.0.6-exact-source
+          path: source
+
+      - name: Apply v2.0.7 full Momentec catalog patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 release/release-tools/v207_patch.py source
+          # Avoid requiring mbstring for truncating safe queue error messages.
+          sed -i 's/mb_substr(/substr(/g' source/includes/class-asss-momentec.php
+
+      - name: Validate PHP and catalog integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          find source -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+          grep -q 'Version: 2.0.7' source/all-star-supplier-sync.php
+          grep -q "define('ASSS_VERSION', '2.0.7')" source/all-star-supplier-sync.php
+          grep -q '/bridge/momentec/catalog/batch' source/includes/class-asss-bridge.php
+          grep -q '/bridge/momentec/requests' source/includes/class-asss-bridge.php
+          grep -q '/bridge/momentec/request-status' source/includes/class-asss-bridge.php
+          grep -q "'momentec'=>\$this->momentec->status()" source/includes/class-asss-bridge.php
+          grep -q 'save_catalog_chunk' source/includes/class-asss-momentec.php
+          grep -q 'catalog_search' source/includes/class-asss-momentec.php
+          grep -q 'queue_style_requests' source/includes/class-asss-momentec.php
+          grep -q 'pending_requests' source/includes/class-asss-momentec.php
+          grep -q 'official-product-feed-plus-v2-hydration' source/includes/class-asss-momentec.php
+          grep -q 'Fetch / Refresh Customer Details' source/includes/class-asss-admin.php
+          grep -q 'asss_momentec_queue_styles' source/includes/class-asss-admin.php
+
+      - name: Validate security and pricing boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -R -q 'ASSS_MOMENTEC_USERNAME\|ASSS_MOMENTEC_PASSWORD' source
+          ! grep -R -q 'MOMENTEC_USERNAME\|MOMENTEC_PASSWORD' source
+          ! grep -R -q 'name="momentec_username"\|name="momentec_password"\|name="momentec_api_key"' source
+          ! grep -R -q "\['cost'\].*catalog\|catalog.*\['cost'\]" source/includes/class-asss-momentec.php
+          grep -q "'msrp'=>sanitize_text_field" source/includes/class-asss-momentec.php
+          grep -q 'Momentec customer-specific details are not cached yet' source/includes/class-asss-momentec.php
+          python3 - <<'PY'
+          from pathlib import Path
+          momentec=Path('source/includes/class-asss-momentec.php').read_text(encoding='utf-8')
+          bridge=Path('source/includes/class-asss-bridge.php').read_text(encoding='utf-8')
+          admin=Path('source/includes/class-asss-admin.php').read_text(encoding='utf-8')
+          for forbidden in ['getenv(', "define('ASSS_MOMENTEC", 'api.momentecbrands.com']:
+              if forbidden in momentec+bridge+admin:
+                  raise SystemExit(f'Forbidden WordPress-side Momentec connection handling: {forbidden}')
+          for required in ['catalog.json','asss_momentec_requests','mark_style_request_complete']:
+              if required not in momentec: raise SystemExit(f'Missing Momentec catalog safety marker: {required}')
+          print('v2.0.7 credential and catalog boundaries passed.')
+          PY
+
+      - name: Build and validate WordPress plugin ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf package
+          mkdir -p package/all-star-supplier-sync
+          rsync -a --exclude='.git' source/ package/all-star-supplier-sync/
+          cd package
+          zip -qr ../release/all-star-supplier-sync-2.0.7.zip all-star-supplier-sync
+          cd ../release
+          unzip -t all-star-supplier-sync-2.0.7.zip >/dev/null
+          unzip -p all-star-supplier-sync-2.0.7.zip all-star-supplier-sync/all-star-supplier-sync.php | grep -q 'Version: 2.0.7'
+          sha256sum all-star-supplier-sync-2.0.7.zip
+
+      - name: Prepare release metadata
+        working-directory: release
+        shell: bash
+        run: |
+          cat > latest.json <<'JSON'
+          {
+            "version": "2.0.7",
+            "package": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/v2.0.7/all-star-supplier-sync-2.0.7.zip",
+            "url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/tag/v2.0.7",
+            "name": "All Star Supplier Sync v2.0.7"
+          }
+          JSON
+          cat > RELEASE-2.0.7.md <<'MD'
+          # All Star Supplier Sync v2.0.7
+
+          Momentec full-catalog browsing while preserving **WordPress <> GitHub Actions <> Supplier**.
+
+          - Adds a complete browse/search/filter Momentec catalog in Suppliers -> Add Products.
+          - Catalog discovery uses Momentec's official U.S. stocked-product CSV feed, not storefront scraping or undocumented v2 wildcard behavior.
+          - The generic public-feed Cost field is not used as account pricing; authenticated v2 Style remains the customer-specific cost/details source.
+          - Administrators can select one or many catalog styles and queue customer-detail hydration directly from WordPress.
+          - GitHub polls the authenticated WordPress request queue, calls production v2 Style/Inventory, validates exact sparse Color+Size SKUs, hydrates color galleries, then returns normalized data to WordPress.
+          - Catalog rows show Needs details, Queued, Fetching, Failed, or Ready states.
+          - Ready rows flow into the existing Review & Import / multi-supplier linking experience.
+          - Adds catalog pagination and brand/category/search filters.
+          - Adds full Momentec status information to the bridge status endpoint.
+          - Momentec credentials remain only in GitHub Actions Secrets and never enter WordPress.
+          - Existing hourly targeted inventory and weekly linked-product refresh remain intact.
+          MD
+
+      - name: Publish exact v2.0.7 source branch
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Release source: All Star Supplier Sync v2.0.7'
+          git push --force origin HEAD:recovery/v2.0.7-exact-source
+
+      - name: Commit v2.0.7 package and metadata
+        working-directory: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add all-star-supplier-sync-2.0.7.zip latest.json RELEASE-2.0.7.md
+          git commit -m 'release: All Star Supplier Sync v2.0.7'
+          git push origin main
+
+      - name: Publish GitHub release
+        working-directory: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v2.0.7 >/dev/null 2>&1; then
+            gh release upload v2.0.7 all-star-supplier-sync-2.0.7.zip --clobber
+            gh release edit v2.0.7 --title 'All Star Supplier Sync v2.0.7' --notes-file RELEASE-2.0.7.md
+          else
+            gh release create v2.0.7 all-star-supplier-sync-2.0.7.zip --target main --title 'All Star Supplier Sync v2.0.7' --notes-file RELEASE-2.0.7.md
+          fi
