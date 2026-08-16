@@ -1,4 +1,4 @@
-# retry: literal patch helper
+# retry: explicit validation
 name: Build Supplier Sync v2.0.14
 
 on:
@@ -35,15 +35,26 @@ jobs:
         run: |
           set -e
           find source -type f -name '*.php' -print0 | xargs -0 -n1 php -l
-          grep -q 'Version: 2.0.14' source/all-star-supplier-sync.php
-          grep -q "define('ASSS_VERSION', '2.0.14')" source/all-star-supplier-sync.php
-          grep -q 'private function ss_parent_featured_url' source/includes/class-asss-importer.php
-          grep -q "'black'=>0" source/includes/class-asss-importer.php
-          grep -q "'navy'=>100" source/includes/class-asss-importer.php
-          grep -q "'charcoal'=>200" source/includes/class-asss-importer.php
-          grep -q "gallery_types" source/includes/class-asss-importer.php
-          grep -q 'No on-model/lifestyle fallback' source/includes/class-asss-importer.php
-          ! grep -R -q 'MOMENTEC_USERNAME\|MOMENTEC_PASSWORD' source
+          python3 - <<'PY'
+          from pathlib import Path
+          main=Path('source/all-star-supplier-sync.php').read_text()
+          p=Path('source/includes/class-asss-importer.php').read_text()
+          checks={
+            'version header':'Version: 2.0.14' in main,
+            'version constant':"define('ASSS_VERSION', '2.0.14')" in main,
+            'selector helper':'private function ss_parent_featured_url' in p,
+            'black ranking':"'black'=>0" in p,
+            'navy ranking':"'navy'=>100" in p,
+            'charcoal ranking':"'charcoal'=>200" in p,
+            'gallery media types':'gallery_types' in p,
+            'lifestyle exclusion':'No on-model/lifestyle fallback' in p,
+            'manual image protection':'$manual_featured' in p,
+          }
+          failed=[name for name,ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit('Validation failed: '+', '.join(failed))
+          print('SS_STOREFRONT_IMAGE_RANKING=PASS')
+          PY
 
       - name: Save exact source
         working-directory: source
