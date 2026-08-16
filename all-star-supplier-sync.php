@@ -2,7 +2,7 @@
 /**
  * Plugin Name: All Star Supplier Sync
  * Description: Curated supplier-to-WooCommerce synchronization framework. SanMar, S&S Activewear, and Momentec production supplier connectors with full catalog browsing through GitHub Actions.
- * Version: 2.0.17
+ * Version: 2.0.18
  * Author: All Star
  * Update URI: https://github.com/rolejarczyk/ASE.SupplierSync-Releases
  * Requires at least: 6.4
@@ -13,7 +13,7 @@
 
 if (!defined('ABSPATH')) exit;
 
-define('ASSS_VERSION', '2.0.17');
+define('ASSS_VERSION', '2.0.18');
 define('ASSS_FILE', __FILE__);
 define('ASSS_DIR', plugin_dir_path(__FILE__));
 define('ASSS_URL', plugin_dir_url(__FILE__));

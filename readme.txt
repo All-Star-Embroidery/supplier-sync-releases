@@ -41,6 +41,14 @@ Core V2 behavior:
 
 == Changelog ==
 
+= 2.0.18 =
+* Added a global storefront-media denylist across SanMar, S&S Activewear, and Momentec for image-not-available placeholders, unavailable-color graphics, swatch sheets, color boards/squares, size charts, and similar supplier reference graphics.
+* Invalid supplier graphics are blocked before sideload and removed from existing Supplier Sync-owned featured/product/variation galleries; merchant-uploaded media remains protected.
+* Added a one-time local cleanup for existing supplier-linked products plus ongoing cleanup after every import, link, refresh, and Quick Repair.
+* Canonicalized equivalent one-size supplier labels to customer-facing OSFA while preserving raw supplier size values for inventory/matching. OS, OSFA, One Size, and One Size Fits All are equivalent; Richardson 112's verified M/L alias also displays as OSFA.
+* Extended cross-supplier one-size matching so OS and OSFA can share one WooCommerce variation without weakening unrelated M/L matching.
+
+
 = 2.0.17 =
 * Unified storefront-vs-reference media policy across SanMar, S&S Activewear, and Momentec.
 * Supplier swatch sheets, color boards/chips, charts, unknown asset types, and Momentec alternate media are retained as supplier reference metadata but excluded from WooCommerce featured/product/variation galleries.
