@@ -49,7 +49,13 @@ class ASSS_Admin {
         if (empty($_GET['asss_imported']) || empty($_GET['post'])) return;
         $post_id = absint($_GET['post']);
         if (!$post_id || get_post_type($post_id) !== 'product') return;
-        echo '<div class="notice notice-success is-dismissible"><p><strong>Supplier import complete.</strong> Product structure, attributes, exact variations, taxonomy data, supplier images, supplier metadata, and Supplier Sync-managed pricing were created. Review the result before publishing; manual price edits will be preserved on future syncs.</p></div>';
+        $supplier=(string)get_post_meta($post_id,'_asss_supplier',true);
+        $momentec_pending=$supplier==='momentec'&&(string)get_post_meta($post_id,'_asss_momentec_media_pending',true)==='yes';
+        if($momentec_pending){
+            echo '<div class="notice notice-success is-dismissible"><p><strong>Momentec product structure imported.</strong> All selected exact variations, inventory, pricing, attributes and supplier metadata are ready. The featured product image is attached immediately when available; variation/gallery images are continuing in the background so the import does not time out.</p></div>';
+        }else{
+            echo '<div class="notice notice-success is-dismissible"><p><strong>Supplier import complete.</strong> Product structure, attributes, exact variations, taxonomy data, supplier images, supplier metadata, and Supplier Sync-managed pricing were created. Review the result before publishing; manual price edits will be preserved on future syncs.</p></div>';
+        }
     }
 
     public function actions(): void {

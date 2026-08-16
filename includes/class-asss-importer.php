@@ -14,6 +14,8 @@ class ASSS_Importer {
         $this->ss = $ss;
         $this->momentec = $momentec;
         $this->multi = $multi;
+        add_action('asss_momentec_variation_media_job', [$this, 'momentec_variation_media_job'], 10, 2);
+        add_action('asss_momentec_parent_media_job', [$this, 'momentec_parent_media_job'], 10, 1);
     }
 
     private function supplier_product_key(string $brand, string $style): string {
@@ -2989,18 +2991,128 @@ class ASSS_Importer {
         $v->save();
     }
 
+    private function momentec_parent_featured_url(array $data,array $variants): string {
+        $candidates=[
+            (string)($data['images']['product'] ?? ''),
+            (string)($data['images']['thumbnail'] ?? ''),
+        ];
+        foreach($variants as $row){
+            if(!is_array($row))continue;
+            $candidates[]=(string)($row['primary_image'] ?? '');
+            foreach((array)($row['gallery'] ?? []) as $raw)$candidates[]=(string)$raw;
+            if(count($candidates)>=12)break;
+        }
+        foreach($candidates as $raw){$u=$this->momentec_media_url((string)$raw);if($u!=='')return $u;}
+        return '';
+    }
+
+    /** Attach only one parent image during the interactive import request. */
+    private function sync_momentec_parent_featured_image(int $product_id,array $data,array $variants): void {
+        $product=wc_get_product($product_id);if(!$product)return;
+        $current=(int)$product->get_image_id();
+        if($current && !$this->is_supplier_attachment($current))return;
+        $url=$this->momentec_parent_featured_url($data,$variants);if($url==='')return;
+        $id=$this->sideload($url,$product_id,'momentec');if(!$id)return;
+        $product->set_image_id($id);$product->save();
+        update_post_meta($product_id,'_asss_momentec_featured_image_url',esc_url_raw($url));
+    }
+
     private function sync_momentec_parent_media(int $product_id,array $data,array $variants): void {
         $product=wc_get_product($product_id);if(!$product)return;
         $urls=[];
         foreach([(string)($data['images']['product'] ?? ''),(string)($data['images']['thumbnail'] ?? '')] as $raw){$u=$this->momentec_media_url($raw);if($u!=='')$urls[$u]=true;}
         foreach($variants as $row){foreach((array)($row['gallery'] ?? []) as $raw){$u=$this->momentec_media_url((string)$raw);if($u!=='')$urls[$u]=true;}if(count($urls)>=8)break;}
         if(!$urls)return;$ids=[];
-        foreach(array_keys($urls) as $url){$id=$this->sideload($url,$product_id,'momentec');if($id)$ids[]=(int)$id;}
+        foreach(array_slice(array_keys($urls),0,8) as $url){$id=$this->sideload($url,$product_id,'momentec');if($id)$ids[]=(int)$id;}
         $ids=array_values(array_unique($ids));if(!$ids)return;
         $current=(int)$product->get_image_id();if(!$current||$this->is_supplier_attachment($current))$product->set_image_id($ids[0]);
         $manual=[];foreach($product->get_gallery_image_ids() as $id)if((int)$id&&!$this->is_supplier_attachment((int)$id))$manual[]=(int)$id;
         $primary=(int)$product->get_image_id();$supplier_gallery=array_values(array_filter($ids,static fn($id)=>(int)$id!==$primary));
         $product->set_gallery_image_ids(array_values(array_unique(array_merge($supplier_gallery,$manual))));$product->save();
+    }
+
+    private function momentec_row_for_variation(int $product_id,int $variation_id,array $variants): array {
+        $v=wc_get_product($variation_id);if(!$v instanceof WC_Product_Variation||$v->get_parent_id()!==$product_id)return [];
+        $want_ids=array_values(array_unique(array_filter([
+            trim((string)$v->get_meta('_asss_momentec_sku_id')),
+            trim((string)$v->get_meta('_asss_momentec_sku')),
+        ])));
+        $want_color=trim((string)$v->get_meta('_asss_momentec_color'));$want_size=trim((string)$v->get_meta('_asss_momentec_size'));
+        foreach($variants as $row){
+            if(!is_array($row))continue;
+            $row_ids=array_values(array_unique(array_filter([
+                trim((string)($row['unique_key'] ?? '')),
+                trim((string)($row['supplier_sku_id'] ?? '')),
+                trim((string)($row['sku'] ?? '')),
+            ])));
+            if($want_ids && array_intersect($want_ids,$row_ids))return $row;
+            $color=trim((string)($row['color'] ?? $row['catalog_color'] ?? ''));$size=trim((string)($row['size'] ?? ''));
+            if($want_color!==''&&$want_size!==''&&strcasecmp($want_color,$color)===0&&strcasecmp($want_size,$size)===0)return $row;
+        }
+        return [];
+    }
+
+    private function schedule_momentec_media_action(string $hook,array $args,int $delay=1): void {
+        $delay=max(1,$delay);
+        if(function_exists('as_schedule_single_action')){
+            as_schedule_single_action(time()+$delay,$hook,$args,'all-star-supplier-sync-momentec-media',true);
+            return;
+        }
+        if(!wp_next_scheduled($hook,$args))wp_schedule_single_event(time()+$delay,$hook,$args);
+    }
+
+    private function queue_momentec_media_jobs(int $product_id,array $variants): void {
+        if(empty($this->sanmar->settings()['sync_images']))return;
+        $queued=0;$delay=2;
+        foreach($variants as $row){
+            if(!is_array($row))continue;
+            $gallery=array_values(array_filter((array)($row['gallery'] ?? [])));$primary=trim((string)($row['primary_image'] ?? ''));
+            if(!$gallery&&$primary==='')continue;
+            $supplier_id=trim((string)($row['unique_key'] ?? $row['supplier_sku_id'] ?? $row['sku'] ?? ''));
+            $color=trim((string)($row['color'] ?? $row['catalog_color'] ?? ''));$size=trim((string)($row['size'] ?? ''));
+            $variation_id=$this->find_momentec_variation($product_id,$supplier_id,$color,$size);if(!$variation_id)continue;
+            update_post_meta($variation_id,'_asss_momentec_media_pending','yes');
+            update_post_meta($variation_id,'_asss_variation_gallery_urls',array_values(array_unique(array_filter(array_map('esc_url_raw',$gallery)))));
+            $this->schedule_momentec_media_action('asss_momentec_variation_media_job',[$product_id,$variation_id],$delay++);
+            $queued++;
+        }
+        update_post_meta($product_id,'_asss_momentec_media_pending',$queued>0?'yes':'no');
+        update_post_meta($product_id,'_asss_momentec_media_jobs_queued',$queued);
+        update_post_meta($product_id,'_asss_momentec_media_queued_at',current_time('mysql'));
+        $this->schedule_momentec_media_action('asss_momentec_parent_media_job',[$product_id],$delay+1);
+        if(function_exists('spawn_cron'))spawn_cron();
+        ASSS_Logger::log('Momentec media queued for background processing','info',['product_id'=>$product_id,'variation_jobs'=>$queued]);
+    }
+
+    public function momentec_variation_media_job(int $product_id,int $variation_id): void {
+        $style=trim((string)get_post_meta($product_id,'_asss_momentec_style',true));if($style==='')return;
+        $data=$this->momentec->style_product($style);if(is_wp_error($data))return;
+        $variants=is_array($data['variants'] ?? null)?$data['variants']:[];$row=$this->momentec_row_for_variation($product_id,$variation_id,$variants);
+        if(!$row){delete_post_meta($variation_id,'_asss_momentec_media_pending');ASSS_Logger::log('Momentec background media row not found','warning',['product_id'=>$product_id,'variation_id'=>$variation_id]);return;}
+        $this->sync_momentec_variation_media($variation_id,$row);
+        $v=wc_get_product($variation_id);
+        if($v instanceof WC_Product_Variation && ($v->get_image_id() || empty($row['gallery']))){
+            delete_post_meta($variation_id,'_asss_momentec_media_pending');
+            delete_post_meta($variation_id,'_asss_momentec_media_attempts');
+        }else{
+            $attempts=absint(get_post_meta($variation_id,'_asss_momentec_media_attempts',true))+1;update_post_meta($variation_id,'_asss_momentec_media_attempts',$attempts);
+            if($attempts<3)$this->schedule_momentec_media_action('asss_momentec_variation_media_job',[$product_id,$variation_id],300*$attempts);
+            else ASSS_Logger::log('Momentec variation media exhausted retries','warning',['product_id'=>$product_id,'variation_id'=>$variation_id]);
+        }
+    }
+
+    public function momentec_parent_media_job(int $product_id): void {
+        $style=trim((string)get_post_meta($product_id,'_asss_momentec_style',true));if($style==='')return;
+        $data=$this->momentec->style_product($style);if(is_wp_error($data))return;
+        $variants=is_array($data['variants'] ?? null)?$data['variants']:[];
+        $mode=(string)get_post_meta($product_id,'_asss_momentec_color_selection_mode',true);if($mode!==''&&$mode!=='all'){
+            $selected=json_decode((string)get_post_meta($product_id,'_asss_momentec_selected_colors',true),true);
+            if(is_array($selected)&&$selected){$lookup=array_fill_keys(array_map('strval',$selected),true);$variants=array_values(array_filter($variants,static function($row)use($lookup){$c=trim((string)($row['color'] ?? $row['catalog_color'] ?? ''));return $c!==''&&isset($lookup[$c]);}));}
+        }
+        $this->sync_momentec_parent_media($product_id,$data,$variants);
+        $pending=0;foreach($this->variation_ids_direct($product_id) as $vid)if((string)get_post_meta($vid,'_asss_momentec_media_pending',true)==='yes')$pending++;
+        update_post_meta($product_id,'_asss_momentec_media_jobs_pending',$pending);
+        if($pending===0){update_post_meta($product_id,'_asss_momentec_media_pending','no');update_post_meta($product_id,'_asss_momentec_media_completed_at',current_time('mysql'));}
     }
 
     private function sync_momentec_bulk_order_fields(WC_Product_Variable $product,array $data,array $variants,bool $is_new): void {
@@ -3054,7 +3166,10 @@ class ASSS_Importer {
             'retail_price'=>$row['retail_price'] ?? '','inventory_qty'=>isset($row['qty'])&&is_numeric($row['qty'])?(int)$row['qty']:null,
             'availability'=>(string)($row['availability'] ?? ''),'availability_date'=>(string)($row['availability_date'] ?? ''),'gallery'=>(array)($row['gallery'] ?? []),
         ]);
-        if(!empty($this->sanmar->settings()['sync_images']))$this->sync_momentec_variation_media($variation_id,$row);
+        if(!empty($this->sanmar->settings()['sync_images'])&&(!empty($row['gallery'])||!empty($row['primary_image']))){
+            update_post_meta($variation_id,'_asss_momentec_media_pending','yes');
+            update_post_meta($variation_id,'_asss_variation_gallery_urls',array_values(array_unique(array_filter(array_map('esc_url_raw',(array)($row['gallery'] ?? []))))));
+        }
         do_action('asss_variation_synced',$variation_id,$product_id,'momentec',['brand'=>$brand,'style'=>$style,'color'=>$color,'size'=>$size,'sku'=>$sku]);
         return ['created'=>$created,'variation_id'=>$variation_id];
     }
@@ -3067,7 +3182,7 @@ class ASSS_Importer {
         $expected_source=[];foreach($rows as $row){$k=(string)($row['unique_key'] ?? $row['supplier_sku_id'] ?? $row['sku'] ?? '');if($k==='')$k=$this->canonical_combo((string)($row['color'] ?? ''),(string)($row['size'] ?? ''));if($k!=='')$expected_source[$k]=true;}
         $this->disable_missing_source_variations($product_id,'momentec',$expected_source);
         $missing_price=0;$missing_image=0;$missing_gallery=0;$missing_sku=0;
-        foreach($seen as $combo=>$vid){$v=wc_get_product($vid);if(!$v instanceof WC_Product_Variation)continue;$row=$expected[$combo];if($v->get_regular_price('edit')===''||$v->get_price('edit')==='')$missing_price++;if($v->get_sku('edit')==='')$missing_sku++;if(!empty($this->sanmar->settings()['sync_images'])&&!empty($row['gallery'])){$saved=$v->get_meta('_asss_variation_gallery_ids');if(is_string($saved)){$d=json_decode($saved,true);if(is_array($d))$saved=$d;}if(!$v->get_image_id())$missing_image++;if(count((array)$row['gallery'])>1&&count((array)$saved)<2)$missing_gallery++;}}
+        foreach($seen as $combo=>$vid){$v=wc_get_product($vid);if(!$v instanceof WC_Product_Variation)continue;$row=$expected[$combo];if($v->get_regular_price('edit')===''||$v->get_price('edit')==='')$missing_price++;if($v->get_sku('edit')==='')$missing_sku++;if(!empty($this->sanmar->settings()['sync_images'])&&!empty($row['gallery'])&&(string)$v->get_meta('_asss_momentec_media_pending')!=='yes'){$saved=$v->get_meta('_asss_variation_gallery_ids');if(is_string($saved)){$d=json_decode($saved,true);if(is_array($d))$saved=$d;}if(!$v->get_image_id())$missing_image++;if(count((array)$row['gallery'])>1&&count((array)$saved)<2)$missing_gallery++;}}
         $audit=['supplier'=>'momentec','expected'=>count($expected),'supplier_variations'=>count($seen),'missing_expected'=>max(0,count($expected)-count($seen)),'missing_price'=>$missing_price,'missing_image_when_available'=>$missing_image,'missing_variation_gallery'=>$missing_gallery,'missing_sku'=>$missing_sku,'created'=>$created,'updated'=>$updated,'checked_at'=>current_time('mysql')];
         update_post_meta($product_id,'_asss_last_variation_audit',wp_json_encode($audit));
         ASSS_Logger::log(array_sum([$audit['missing_expected'],$missing_price,$missing_image,$missing_gallery,$missing_sku])?'Momentec variation audit completed with issues':'Momentec variation audit passed',array_sum([$audit['missing_expected'],$missing_price,$missing_image,$missing_gallery,$missing_sku])?'warning':'info',['product_id'=>$product_id,'audit'=>$audit]);
@@ -3089,7 +3204,7 @@ class ASSS_Importer {
         $mode=count($selected_colors)>=count($all_colors)?'all':'selected';$product->update_meta_data('_asss_supplier','momentec');$product->update_meta_data('_asss_supplier_product_key','momentec|'.strtolower($brand).'|'.strtolower($style));$product->update_meta_data('_asss_momentec_brand',$brand);$product->update_meta_data('_asss_momentec_style',$style);$product->update_meta_data('_asss_momentec_specs',wp_json_encode((array)($data['specs'] ?? [])));$product->update_meta_data('_asss_sync_enabled','yes');$product->update_meta_data('_asss_color_selection_mode',$mode);$product->update_meta_data('_asss_selected_colors',wp_json_encode($selected_colors));$product_id=$product->save();
         $this->multi->register_product_source($product_id,'momentec',['brand'=>$brand,'style'=>$style,'selection_mode'=>$mode,'selected_colors'=>$selected_colors]);update_post_meta($product_id,'_asss_momentec_color_selection_mode',$mode);update_post_meta($product_id,'_asss_momentec_selected_colors',wp_json_encode($selected_colors));
         $this->sync_taxonomies($product_id,$brand,$categories,'',$is_new);$common=$this->ss_common_rows($variants,$data);$this->set_attributes($product,$common);$this->sync_parent_shipping($product,$common);$this->sync_momentec_bulk_order_fields($product,$data,$variants,$is_new);$product->save();
-        $audit=$this->reconcile_momentec_variations($product_id,$variants,true);if(!empty($this->sanmar->settings()['sync_images']))$this->sync_momentec_parent_media($product_id,$data,$variants);$this->sync_managed_pricing_for_product($product_id);
+        $audit=$this->reconcile_momentec_variations($product_id,$variants,true);if(!empty($this->sanmar->settings()['sync_images'])){$this->sync_momentec_parent_featured_image($product_id,$data,$variants);$this->queue_momentec_media_jobs($product_id,$variants);}$this->sync_managed_pricing_for_product($product_id);
         $product=wc_get_product($product_id);if($product instanceof WC_Product_Variable){$product->update_meta_data('_asss_last_product_sync',current_time('mysql'));$product->save();}WC_Product_Variable::sync($product_id);wc_delete_product_transients($product_id);do_action('asss_product_synced',$product_id,'momentec',['brand'=>$brand,'style'=>$style,'mode'=>'import']);ASSS_Logger::log('Imported/updated Momentec product','info',['product_id'=>$product_id,'brand'=>$brand,'style'=>$style,'selected_colors'=>count($selected_colors),'expected_variations'=>(int)($audit['expected'] ?? count($variants))]);return $product_id;
     }
 
@@ -3097,7 +3212,7 @@ class ASSS_Importer {
         $style=trim((string)get_post_meta($product_id,'_asss_momentec_style',true));if($style==='')return new WP_Error('mapping','Product is missing its Momentec style mapping.');$data=$this->momentec->style_product($style);if(is_wp_error($data))return $data;$variants=is_array($data['variants'] ?? null)?$data['variants']:[];if(!$variants)return new WP_Error('momentec_variants','No exact Momentec SKU rows are cached for this style.');
         $mode=(string)get_post_meta($product_id,'_asss_momentec_color_selection_mode',true)?: (string)get_post_meta($product_id,'_asss_color_selection_mode',true);if($mode!==''&&$mode!=='all'){$sel=json_decode((string)get_post_meta($product_id,'_asss_momentec_selected_colors',true),true);if(is_array($sel)&&$sel){$lookup=array_fill_keys(array_map('strval',$sel),true);$variants=array_values(array_filter($variants,static function($row)use($lookup){$c=trim((string)($row['color'] ?? $row['catalog_color'] ?? ''));return $c!==''&&isset($lookup[$c]);}));}}
         if(!$variants)return new WP_Error('no_variants','No Momentec variations remain after the saved color selection.');$product=wc_get_product($product_id);if(!$product instanceof WC_Product_Variable)return new WP_Error('product','Product missing or is not variable.');$brand=trim((string)($data['brand'] ?? get_post_meta($product_id,'_asss_momentec_brand',true)));if(!empty($this->sanmar->settings()['sync_description']))$this->sync_supplier_description($product,(string)($data['description'] ?? ''),false);$this->maybe_set_momentec_parent_sku($product,$brand,$style);$product->update_meta_data('_asss_momentec_brand',$brand);$product->update_meta_data('_asss_momentec_specs',wp_json_encode((array)($data['specs'] ?? [])));$product->update_meta_data('_asss_last_product_sync',current_time('mysql'));
-        $categories=is_array($data['categories'] ?? null)?$data['categories']:[];$base=trim((string)($data['category'] ?? ''));if($base!=='')array_unshift($categories,$base);$categories=array_values(array_unique(array_filter(array_map('sanitize_text_field',$categories))));$this->sync_taxonomies($product_id,$brand,$categories,'',false);$common=$this->ss_common_rows($variants,$data);$this->set_attributes($product,$common);$this->sync_parent_shipping($product,$common);$this->sync_momentec_bulk_order_fields($product,$data,$variants,false);$product->save();$this->reconcile_momentec_variations($product_id,$variants,!empty($this->sanmar->settings()['sync_new_variations']));if(!empty($this->sanmar->settings()['sync_images']))$this->sync_momentec_parent_media($product_id,$data,$variants);$this->sync_managed_pricing_for_product($product_id);WC_Product_Variable::sync($product_id);wc_delete_product_transients($product_id);do_action('asss_product_synced',$product_id,'momentec',['brand'=>$brand,'style'=>$style,'mode'=>'repair']);return $product_id;
+        $categories=is_array($data['categories'] ?? null)?$data['categories']:[];$base=trim((string)($data['category'] ?? ''));if($base!=='')array_unshift($categories,$base);$categories=array_values(array_unique(array_filter(array_map('sanitize_text_field',$categories))));$this->sync_taxonomies($product_id,$brand,$categories,'',false);$common=$this->ss_common_rows($variants,$data);$this->set_attributes($product,$common);$this->sync_parent_shipping($product,$common);$this->sync_momentec_bulk_order_fields($product,$data,$variants,false);$product->save();$this->reconcile_momentec_variations($product_id,$variants,!empty($this->sanmar->settings()['sync_new_variations']));if(!empty($this->sanmar->settings()['sync_images'])){$this->sync_momentec_parent_featured_image($product_id,$data,$variants);$this->queue_momentec_media_jobs($product_id,$variants);}$this->sync_managed_pricing_for_product($product_id);WC_Product_Variable::sync($product_id);wc_delete_product_transients($product_id);do_action('asss_product_synced',$product_id,'momentec',['brand'=>$brand,'style'=>$style,'mode'=>'repair']);return $product_id;
     }
 
     public function link_momentec_style_to_product(int $product_id,string $style,array $selected_colors=[]){
@@ -3106,10 +3221,10 @@ class ASSS_Importer {
         $mode=count($selected_colors)>=count($all)?'all':'selected';update_post_meta($product_id,'_asss_momentec_brand',$brand);update_post_meta($product_id,'_asss_momentec_style',$style);update_post_meta($product_id,'_asss_momentec_specs',wp_json_encode((array)($data['specs'] ?? [])));update_post_meta($product_id,'_asss_momentec_color_selection_mode',$mode);update_post_meta($product_id,'_asss_momentec_selected_colors',wp_json_encode($selected_colors));update_post_meta($product_id,'_asss_sync_enabled','yes');$this->multi->register_product_source($product_id,'momentec',['brand'=>$brand,'style'=>$style,'selection_mode'=>$mode,'selected_colors'=>$selected_colors]);
         $categories=is_array($data['categories'] ?? null)?$data['categories']:[];$base=trim((string)($data['category'] ?? ''));if($base!=='')array_unshift($categories,$base);$this->add_supplier_categories($product_id,$categories,'momentec');$expected=[];$matched=0;$created=0;
         foreach($variants as $row){if(!is_array($row))continue;$color=trim((string)($row['color'] ?? $row['catalog_color'] ?? ''));$size=trim((string)($row['size'] ?? ''));$key=(string)($row['unique_key'] ?? $row['sku'] ?? '');if($key==='')$key=$this->canonical_combo($color,$size);$expected[$key]=true;$supplier_id=(string)($row['unique_key'] ?? $row['sku'] ?? '');$vid=$this->find_momentec_variation($product_id,$supplier_id,$color,$size);if(!$vid)$vid=$this->find_variation_by_combo_any($product_id,$color,$size);if(!$vid)$vid=$this->find_variation_by_verified_size_alias($product_id,$brand,$style,$color,$size);
-            if(!$vid){$r=$this->sync_momentec_variation($product_id,$row);$vid=(int)($r['variation_id'] ?? 0);if($vid)$created++;}else{$matched++;update_post_meta($vid,'_asss_momentec_sku_id',sanitize_text_field($supplier_id));update_post_meta($vid,'_asss_momentec_sku',sanitize_text_field((string)($row['sku'] ?? '')));update_post_meta($vid,'_asss_momentec_color',$color);update_post_meta($vid,'_asss_momentec_size',$size);update_post_meta($vid,'_asss_momentec_cost',(string)($row['customer_price'] ?? ''));update_post_meta($vid,'_asss_momentec_retail_price',(string)($row['retail_price'] ?? ''));$existing=wc_get_product($vid);if(!empty($this->sanmar->settings()['sync_images'])&&$existing instanceof WC_Product_Variation&&!$existing->get_image_id())$this->sync_momentec_variation_media($vid,$row);}
+            if(!$vid){$r=$this->sync_momentec_variation($product_id,$row);$vid=(int)($r['variation_id'] ?? 0);if($vid)$created++;}else{$matched++;update_post_meta($vid,'_asss_momentec_sku_id',sanitize_text_field($supplier_id));update_post_meta($vid,'_asss_momentec_sku',sanitize_text_field((string)($row['sku'] ?? '')));update_post_meta($vid,'_asss_momentec_color',$color);update_post_meta($vid,'_asss_momentec_size',$size);update_post_meta($vid,'_asss_momentec_cost',(string)($row['customer_price'] ?? ''));update_post_meta($vid,'_asss_momentec_retail_price',(string)($row['retail_price'] ?? ''));$existing=wc_get_product($vid);if(!empty($this->sanmar->settings()['sync_images'])&&$existing instanceof WC_Product_Variation&&(!empty($row['gallery'])||!empty($row['primary_image'])))update_post_meta($vid,'_asss_momentec_media_pending','yes');}
             if(!$vid)continue;$this->multi->register_variation_source($vid,'momentec',['sku'=>(string)($row['sku'] ?? ''),'sku_id'=>$supplier_id,'unique_key'=>$supplier_id,'color'=>$color,'size'=>$size,'cost'=>$row['customer_price'] ?? '','retail_price'=>$row['retail_price'] ?? '','inventory_qty'=>isset($row['qty'])&&is_numeric($row['qty'])?(int)$row['qty']:null,'availability'=>(string)($row['availability'] ?? ''),'availability_date'=>(string)($row['availability_date'] ?? ''),'gallery'=>(array)($row['gallery'] ?? [])]);$this->multi->recalculate_variation_inventory($vid);
         }
-        $this->disable_missing_source_variations($product_id,'momentec',$expected);$this->rebuild_attributes_from_variations($product_id);$this->sync_managed_pricing_for_product($product_id);$this->multi->recalculate_product_inventory($product_id);update_post_meta($product_id,'_asss_last_product_sync',current_time('mysql'));do_action('asss_product_synced',$product_id,'momentec',['brand'=>$brand,'style'=>$style,'mode'=>'multi-link']);ASSS_Logger::log('Momentec linked as additional supplier','info',['product_id'=>$product_id,'matched_existing'=>$matched,'created_momentec_only'=>$created]);return $product_id;
+        $this->disable_missing_source_variations($product_id,'momentec',$expected);$this->rebuild_attributes_from_variations($product_id);if(!empty($this->sanmar->settings()['sync_images'])){$this->sync_momentec_parent_featured_image($product_id,$data,$variants);$this->queue_momentec_media_jobs($product_id,$variants);}$this->sync_managed_pricing_for_product($product_id);$this->multi->recalculate_product_inventory($product_id);update_post_meta($product_id,'_asss_last_product_sync',current_time('mysql'));do_action('asss_product_synced',$product_id,'momentec',['brand'=>$brand,'style'=>$style,'mode'=>'multi-link']);ASSS_Logger::log('Momentec linked as additional supplier','info',['product_id'=>$product_id,'matched_existing'=>$matched,'created_momentec_only'=>$created]);return $product_id;
     }
 
     private function hide_discontinued_product(WC_Product $product, string $status): void {
