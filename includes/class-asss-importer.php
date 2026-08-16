@@ -18,6 +18,7 @@ class ASSS_Importer {
         add_action('asss_momentec_parent_media_job', [$this, 'momentec_parent_media_job'], 10, 1);
         add_action('admin_init', [$this, 'migrate_supplier_categories_v2015'], 35);
         add_action('admin_init', [$this, 'migrate_storefront_media_and_sizes_v2018'], 36);
+        add_action('admin_init', [$this, 'migrate_ss_tn_reference_media_v2019'], 37);
         add_action('asss_product_synced', [$this, 'normalize_product_storefront_sizes'], 45, 2);
         add_action('asss_product_synced', [$this, 'cleanup_invalid_supplier_storefront_media'], 50, 2);
     }
@@ -100,19 +101,64 @@ class ASSS_Importer {
         return $url !== '' && $this->is_invalid_storefront_media_url($url);
     }
 
-    /** Remove only Supplier Sync-owned invalid graphics; merchant media is sacred. */
+    /**
+     * S&S sometimes supplies a style-level TN asset while the exact color rows
+     * have proper front/back/direct-side product photography. On the affected
+     * styles the TN asset is the blue "image not yet available" graphic. Image
+     * optimization plugins can create a WebP attachment that no longer carries
+     * Supplier Sync's _asss_image_source metadata, so cleanup must also inspect
+     * the local attachment basename. Scope this rule narrowly to S&S-linked
+     * products and require the stored S&S style token immediately before TN.
+     */
+    private function is_ss_tn_reference_attachment(int $attachment_id, int $product_id): bool {
+        if ($attachment_id < 1 || $product_id < 1) return false;
+        $style = trim((string)get_post_meta($product_id, '_asss_ss_style', true));
+        if ($style === '') return false;
+        $style_key = strtolower(preg_replace('/[^a-z0-9]+/i', '', $style));
+        if ($style_key === '') return false;
+
+        $candidates = [];
+        $source_url = trim((string)get_post_meta($attachment_id, '_asss_image_url', true));
+        if ($source_url !== '') $candidates[] = basename((string)parse_url($source_url, PHP_URL_PATH));
+        $local_url = (string)wp_get_attachment_url($attachment_id);
+        if ($local_url !== '') $candidates[] = basename((string)parse_url($local_url, PHP_URL_PATH));
+        $file = get_attached_file($attachment_id);
+        if (is_string($file) && $file !== '') $candidates[] = basename($file);
+        $post = get_post($attachment_id);
+        if ($post) {
+            $candidates[] = (string)$post->post_title;
+            $candidates[] = (string)$post->post_name;
+        }
+
+        foreach ($candidates as $candidate) {
+            $stem = preg_replace('/\.(?:webp|avif|jpe?g|png|gif)$/i', '', trim((string)$candidate));
+            $key = strtolower(preg_replace('/[^a-z0-9]+/i', '', (string)$stem));
+            if ($key === '') continue;
+            // Optimizers may append a numeric duplicate suffix after conversion.
+            $key = preg_replace('/\d+$/', '', $key);
+            if (str_ends_with($key, $style_key . 'tn')) return true;
+        }
+        return false;
+    }
+
+    private function invalid_storefront_attachment_for_product(int $attachment_id, int $product_id): bool {
+        if ($this->invalid_supplier_attachment($attachment_id)) return true;
+        return $this->is_ss_tn_reference_attachment($attachment_id, $product_id);
+    }
+
+    /** Remove invalid supplier/reference graphics, including recognized optimizer derivatives; ordinary merchant media is preserved. */
     public function cleanup_invalid_supplier_storefront_media(int $product_id, string $supplier = ''): void {
         $product = wc_get_product($product_id);
         if (!$product) return;
         $removed = 0;
         $featured = (int)$product->get_image_id();
-        if ($featured && $this->invalid_supplier_attachment($featured)) {
+        if ($featured && $this->invalid_storefront_attachment_for_product($featured, $product_id)) {
             $product->set_image_id(0); $removed++;
         }
         $gallery = [];
         foreach ((array)$product->get_gallery_image_ids() as $id) {
             $id = (int)$id;
-            if ($id && $this->invalid_supplier_attachment($id)) { $removed++; continue; }
+            if ($id && $this->invalid_storefront_attachment_for_product($id, $product_id)) { $removed++; continue; }
             if ($id) $gallery[] = $id;
         }
         $product->set_gallery_image_ids(array_values(array_unique($gallery)));
@@ -123,7 +169,7 @@ class ASSS_Importer {
             if (!$v instanceof WC_Product_Variation) continue;
             $changed = false;
             $primary = (int)$v->get_image_id();
-            if ($primary && $this->invalid_supplier_attachment($primary)) {
+            if ($primary && $this->invalid_storefront_attachment_for_product($primary, $product_id)) {
                 $v->set_image_id(0); $removed++; $changed = true;
                 $resolved = (string)$v->get_meta('_asss_resolved_variation_image_url');
                 if ($resolved !== '' && $this->is_invalid_storefront_media_url($resolved)) $v->delete_meta_data('_asss_resolved_variation_image_url');
@@ -132,7 +178,7 @@ class ASSS_Importer {
                 $keep = [];
                 foreach ((array)$v->get_gallery_image_ids() as $id) {
                     $id = (int)$id;
-                    if ($id && $this->invalid_supplier_attachment($id)) { $removed++; $changed = true; continue; }
+                    if ($id && $this->invalid_storefront_attachment_for_product($id, $product_id)) { $removed++; $changed = true; continue; }
                     if ($id) $keep[] = $id;
                 }
                 if ($changed) $v->set_gallery_image_ids(array_values(array_unique($keep)));
@@ -140,7 +186,7 @@ class ASSS_Importer {
             $stored = $v->get_meta('_asss_variation_gallery_ids');
             if (is_string($stored)) { $decoded = json_decode($stored, true); if (is_array($decoded)) $stored = $decoded; }
             if (is_array($stored)) {
-                $clean = array_values(array_filter(array_map('intval', $stored), fn($id) => $id > 0 && !$this->invalid_supplier_attachment($id)));
+                $clean = array_values(array_filter(array_map('intval', $stored), fn($id) => $id > 0 && !$this->invalid_storefront_attachment_for_product($id, $product_id)));
                 if ($clean !== array_values(array_filter(array_map('intval', $stored)))) {
                     $v->update_meta_data('_asss_variation_gallery_ids', $clean); $changed = true;
                 }
@@ -204,6 +250,19 @@ class ASSS_Importer {
         }
         update_option('asss_v2018_storefront_media_sizes_migrated','yes',false);
         ASSS_Logger::log('v2.0.18 storefront media/size migration completed', 'info', ['products'=>count((array)$ids)]);
+    }
+
+    /** One-time v2.0.19 cleanup for S&S TN/reference thumbnails and optimizer derivatives. */
+    public function migrate_ss_tn_reference_media_v2019(): void {
+        if (!current_user_can('manage_woocommerce')) return;
+        if ((string)get_option('asss_v2019_ss_tn_media_migrated','') === 'yes') return;
+        $ids = get_posts([
+            'post_type'=>'product','post_status'=>'any','fields'=>'ids','posts_per_page'=>-1,'no_found_rows'=>true,
+            'meta_key'=>'_asss_ss_style','meta_compare'=>'EXISTS',
+        ]);
+        foreach ((array)$ids as $product_id) $this->cleanup_invalid_supplier_storefront_media((int)$product_id, 'ss-v2019');
+        update_option('asss_v2019_ss_tn_media_migrated','yes',false);
+        ASSS_Logger::log('v2.0.19 S&S TN/reference media cleanup completed', 'info', ['products'=>count((array)$ids)]);
     }
 
     /**

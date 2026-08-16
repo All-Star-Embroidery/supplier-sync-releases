@@ -4,7 +4,7 @@ Tags: woocommerce, supplier, inventory, sanmar, ssactivewear, github-actions
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 2.0.16
+Stable tag: 2.0.19
 License: Proprietary
 
 Curated multi-supplier-to-WooCommerce synchronization for All Star. SanMar and S&S Activewear connectors included.
@@ -40,6 +40,12 @@ Core V2 behavior:
 6. Use Suppliers -> Add Products to import new styles or explicitly link a second supplier to an existing Brand + Style product.
 
 == Changelog ==
+
+= 2.0.19 =
+* Corrected S&S placeholder cleanup for style-level TN assets such as CCRC0TN and FF180APTN; these are treated as supplier reference media rather than storefront photography.
+* Cleanup now checks the original supplier URL plus the local attachment filename/title so WebP/optimized derivatives that lost Supplier Sync attachment metadata are also removed from affected S&S product/variation galleries.
+* Added a new one-time S&S cleanup migration because sites that already ran the v2.0.18 migration need the refined TN rule to execute automatically.
+* No supplier media files are deleted from the WordPress Media Library; the fix removes them from customer-facing featured/gallery slots while preserving ordinary merchant media.
 
 = 2.0.18 =
 * Added a global storefront-media denylist across SanMar, S&S Activewear, and Momentec for image-not-available placeholders, unavailable-color graphics, swatch sheets, color boards/squares, size charts, and similar supplier reference graphics.
