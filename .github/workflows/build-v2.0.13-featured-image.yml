@@ -35,7 +35,10 @@ jobs:
           set -e
           find source -type f -name '*.php' -print0 | xargs -0 -n1 php -l
           grep -q 'Version: 2.0.13' source/all-star-supplier-sync.php
-          python3 -c "from pathlib import Path; p=Path('source/includes/class-asss-importer.php').read_text(); a=p.index('private function momentec_parent_featured_url'); b=p.index('/** Attach only one parent image',a); f=p[a:b]; assert f.index(\"images']['thumbnail\") < f.index('primary_image') < f.index(\"images']['product\"); assert \"row['gallery']\" not in f; a=p.index('private function sync_momentec_parent_media'); b=p.index('private function momentec_row_for_variation',a); assert 'set_image_id' not in p[a:b]"
+          grep -Fq '$thumbnail=$this->momentec_media_url' source/includes/class-asss-importer.php
+          grep -Fq '$primary=$this->momentec_media_url' source/includes/class-asss-importer.php
+          grep -Fq '$product=$this->momentec_media_url' source/includes/class-asss-importer.php
+          python3 -c "from pathlib import Path; p=Path('source/includes/class-asss-importer.php').read_text(); a=p.index('private function momentec_parent_featured_url'); b=p.index('/** Attach only one parent image',a); f=p[a:b]; assert \"row['gallery']\" not in f; a=p.index('private function sync_momentec_parent_media'); b=p.index('private function momentec_row_for_variation',a); assert 'set_image_id' not in p[a:b]"
 
       - name: Save exact source
         working-directory: source
