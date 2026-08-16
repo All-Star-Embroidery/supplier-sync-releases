@@ -209,6 +209,49 @@ class ASSS_Momentec {
         return is_array($data['products'] ?? null) ? count($data['products']) : 0;
     }
 
+
+    /** Find the official catalog-feed summary for one style. */
+    public function catalog_product(string $style): array {
+        $key = $this->style_key($style);
+        foreach ((array)($this->catalog_data()['products'] ?? []) as $row) {
+            if (!is_array($row)) continue;
+            if ($this->style_key((string)($row['style'] ?? '')) === $key) return $row;
+        }
+        return [];
+    }
+
+    /**
+     * Hydrated v2 data owns customer pricing/SKUs/media; the official product
+     * feed owns browse metadata such as Category. Merge them so Woo imports get
+     * the richest trustworthy category set without sending credentials to WP.
+     */
+    private function enrich_style_with_catalog(array $product, string $style): array {
+        $catalog = $this->catalog_product($style);
+        if (!$catalog) return $product;
+
+        $categories = [];
+        foreach ([(string)($product['category'] ?? ''), (string)($product['base_category'] ?? ''), (string)($catalog['category'] ?? '')] as $cat) {
+            $cat = trim($cat); if ($cat !== '') $categories[] = $cat;
+        }
+        foreach ([(array)($product['categories'] ?? []), (array)($catalog['categories'] ?? [])] as $set) {
+            foreach ($set as $cat) { $cat = trim((string)$cat); if ($cat !== '') $categories[] = $cat; }
+        }
+        $categories = $this->clean_text_list($categories);
+        if ($categories) $product['categories'] = $categories;
+        if (trim((string)($product['category'] ?? '')) === '') {
+            $product['category'] = sanitize_text_field((string)($catalog['category'] ?? ($categories[0] ?? '')));
+        }
+        if (trim((string)($product['brand'] ?? '')) === '') $product['brand'] = sanitize_text_field((string)($catalog['brand'] ?? ''));
+        if (trim((string)($product['title'] ?? '')) === '') $product['title'] = sanitize_text_field((string)($catalog['title'] ?? $style));
+        if (trim((string)($product['description'] ?? '')) === '') $product['description'] = sanitize_textarea_field((string)($catalog['description'] ?? ''));
+        if (trim((string)($product['division'] ?? '')) === '') $product['division'] = sanitize_text_field((string)($catalog['division'] ?? ''));
+        if (!is_array($product['images'] ?? null)) $product['images'] = [];
+        $catalog_image = esc_url_raw((string)($catalog['image'] ?? ''));
+        if ($catalog_image !== '' && empty($product['images']['thumbnail'])) $product['images']['thumbnail'] = $catalog_image;
+        if ($catalog_image !== '' && empty($product['images']['product'])) $product['images']['product'] = $catalog_image;
+        return $product;
+    }
+
     public function catalog_facets(): array {
         $brands=[]; $categories=[];
         foreach ((array)($this->catalog_data()['products'] ?? []) as $row) {
@@ -352,7 +395,7 @@ class ASSS_Momentec {
             if(isset($seen_skus[$sku_key])||isset($seen_combos[$combo]))return new WP_Error('momentec_duplicate_variant','Momentec payload contains a duplicate exact SKU or Color+Size combination.',['status'=>409]);
             $seen_skus[$sku_key]=1;$seen_combos[$combo]=1;
         }
-        $product['supplier']='momentec';$product['supplier_name']=self::LABEL;$product['style']=$style;$product['supplier_style_id']=$style;$product['received_at']=current_time('mysql');
+        $product=$this->enrich_style_with_catalog($product,$style);$product['supplier']='momentec';$product['supplier_name']=self::LABEL;$product['style']=$style;$product['supplier_style_id']=$style;$product['received_at']=current_time('mysql');
         $product['bridge_meta']=['source'=>sanitize_text_field((string)($meta['source'] ?? 'momentec-v2-production')),'source_timestamp'=>sanitize_text_field((string)($meta['source_timestamp'] ?? ''))];
         $file=$this->style_filename($style);$write=$this->write_json_atomic($this->styles_dir().'/'.$file,$product);if(is_wp_error($write))return $write;
         $manifest=$this->style_manifest();$summary=$this->summary($product);$summary['file']=$file;$summary['received_at']=current_time('mysql');$summary['source']=sanitize_text_field((string)($meta['source'] ?? 'momentec-v2-production'));
@@ -373,7 +416,10 @@ class ASSS_Momentec {
         $key=$this->style_key($style);$meta=$this->style_manifest()[$key] ?? [];
         if(!is_array($meta)||empty($meta['file']))return new WP_Error('momentec_style_missing','Momentec customer-specific details are not cached yet. Queue this style from the Momentec catalog and let GitHub hydrate it.');
         $path=$this->styles_dir().'/'.basename((string)$meta['file']);if(!is_file($path))return new WP_Error('momentec_style_file','Momentec cached style file is missing. Queue the style for refresh.');
-        $decoded=json_decode((string)@file_get_contents($path),true);if(!is_array($decoded))return new WP_Error('momentec_style_json','Momentec cached style file is invalid.');return $decoded;
+        $decoded=json_decode((string)@file_get_contents($path),true);if(!is_array($decoded))return new WP_Error('momentec_style_json','Momentec cached style file is invalid.');
+        // Runtime enrichment also upgrades already-cached pre-2.0.15 styles; no
+        // new Momentec API hydration is required just to restore categories.
+        return $this->enrich_style_with_catalog($decoded,$style);
     }
 
     public function purge_legacy_wordpress_connection_values(): void {

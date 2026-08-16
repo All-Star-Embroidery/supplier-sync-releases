@@ -4,7 +4,7 @@ Tags: woocommerce, supplier, inventory, sanmar, ssactivewear, github-actions
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 2.0.6
+Stable tag: 2.0.15
 License: Proprietary
 
 Curated multi-supplier-to-WooCommerce synchronization for All Star. SanMar and S&S Activewear connectors included.
@@ -40,6 +40,15 @@ Core V2 behavior:
 6. Use Suppliers -> Add Products to import new styles or explicitly link a second supplier to an existing Brand + Style product.
 
 == Changelog ==
+
+= 2.0.15 =
+* Unified WooCommerce product-category import logic across SanMar, S&S Activewear, and Momentec.
+* Categories are assigned during import, link, refresh, and Quick Repair while merchant-owned categories are preserved.
+* Supplier category ownership is tracked separately so one supplier refresh cannot erase categories provided by another supplier.
+* Explicit supplier hierarchy labels create real WooCommerce parent/child category terms instead of flat path-name duplicates.
+* Momentec hydrated v2 styles now inherit the official full-catalog CSV category set, including already-cached styles.
+* Added a one-time category-only reconciliation for existing supplier-linked products using local cache data only.
+
 
 = 2.0.6 =
 * Momentec production v2 is now a live Supplier Sync connector using WordPress <> GitHub Actions <> Momentec.

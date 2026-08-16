@@ -16,6 +16,7 @@ class ASSS_Importer {
         $this->multi = $multi;
         add_action('asss_momentec_variation_media_job', [$this, 'momentec_variation_media_job'], 10, 2);
         add_action('asss_momentec_parent_media_job', [$this, 'momentec_parent_media_job'], 10, 1);
+        add_action('admin_init', [$this, 'migrate_supplier_categories_v2015'], 35);
     }
 
     private function supplier_product_key(string $brand, string $style): string {
@@ -1696,24 +1697,22 @@ class ASSS_Importer {
     /** Collect every distinct category signal present in supplier rows. */
     private function categories_from_rows(array $rows): array {
         $out = [];
-        $single_fields = ['CATEGORY','PRODUCT_CATEGORY','BASE_CATEGORY','SUBCATEGORY','SUB_CATEGORY'];
+        $single_fields = [
+            'CATEGORY','CATEGORY_NAME','CATEGORY_PATH','PRODUCT_CATEGORY','PRODUCT_CATEGORY_NAME',
+            'BASE_CATEGORY','SUBCATEGORY','SUB_CATEGORY','SUB_CATEGORY_NAME',
+        ];
         $multi_fields = ['CATEGORIES','CATEGORY_NAMES','PRODUCT_CATEGORIES'];
         $add = static function(string $value) use (&$out): void {
-            $value = trim(wp_strip_all_tags($value));
+            $value = trim(wp_strip_all_tags(html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8')));
             if ($value === '' || ctype_digit($value)) return;
-            $out[mb_strtolower($value)] = $value;
+            $out[mb_strtolower(preg_replace('/\s+/u', ' ', $value))] = $value;
         };
 
         foreach ($rows as $row) {
             if (!is_array($row)) continue;
             foreach ($single_fields as $field) {
                 $value = trim((string)$this->sanmar->first($row, [$field]));
-                if ($value === '') continue;
-                // Hierarchical supplier labels occasionally arrive as "Headwear > Caps".
-                // Keep the complete label and every named level so Woo/ASBO can filter
-                // by the broad or specific supplier category.
-                $add($value);
-                foreach (preg_split('/\s*>\s*|\s*\|\s*/u', $value) ?: [] as $part) $add((string)$part);
+                if ($value !== '') $add($value);
             }
             foreach ($multi_fields as $field) {
                 $value = trim((string)$this->sanmar->first($row, [$field]));
@@ -1724,50 +1723,227 @@ class ASSS_Importer {
         return array_values($out);
     }
 
-    private function sync_taxonomies(int $product_id, string $brand, array $categories, string $keywords, bool $is_new): void {
-        $this->sync_categories($product_id, $categories, $is_new);
+    /** Pull every category signal from a normalized S&S/Momentec product payload. */
+    private function categories_from_normalized_product(array $data): array {
+        $out = [];
+        $add = static function($value) use (&$out): void {
+            if (is_array($value)) {
+                foreach ($value as $nested) {
+                    if (is_scalar($nested)) {
+                        $v = trim(wp_strip_all_tags((string)$nested));
+                        if ($v !== '' && !ctype_digit($v)) $out[mb_strtolower(preg_replace('/\s+/u', ' ', $v))] = $v;
+                    }
+                }
+                return;
+            }
+            if (!is_scalar($value)) return;
+            $v = trim(wp_strip_all_tags((string)$value));
+            if ($v !== '' && !ctype_digit($v)) $out[mb_strtolower(preg_replace('/\s+/u', ' ', $v))] = $v;
+        };
+        foreach (['category','base_category','product_category','subcategory','sub_category','category_path'] as $key) {
+            if (array_key_exists($key, $data)) $add($data[$key]);
+        }
+        if (array_key_exists('categories', $data)) $add($data['categories']);
+        return array_values($out);
+    }
+
+    /** Normalize one supplier category label into a WooCommerce hierarchy path. */
+    private function supplier_category_path(string $value): array {
+        $value = trim(wp_strip_all_tags(html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8')));
+        if ($value === '' || ctype_digit($value)) return [];
+        // Only explicit hierarchy delimiters become parent/child relationships.
+        // Slash and hyphen stay untouched because apparel category names commonly
+        // contain them as literal text (for example Youth/Adult or Performance-Tee).
+        $parts = preg_split('/\s*(?:>|»|→|::)\s*/u', $value) ?: [$value];
+        $path = [];
+        foreach ($parts as $part) {
+            $part = trim(preg_replace('/\s+/u', ' ', sanitize_text_field((string)$part)));
+            if ($part === '' || ctype_digit($part)) continue;
+            $path[] = $part;
+        }
+        return $path;
+    }
+
+    private function normalize_supplier_category_paths(array $categories): array {
+        $paths = [];
+        foreach ($categories as $category) {
+            if (is_array($category)) {
+                foreach ($category as $nested) {
+                    if (!is_scalar($nested)) continue;
+                    $path = $this->supplier_category_path((string)$nested);
+                    if ($path) $paths[mb_strtolower(implode(' > ', $path))] = $path;
+                }
+                continue;
+            }
+            if (!is_scalar($category)) continue;
+            $path = $this->supplier_category_path((string)$category);
+            if ($path) $paths[mb_strtolower(implode(' > ', $path))] = $path;
+        }
+        return array_values($paths);
+    }
+
+    /** Create/reuse a real WooCommerce parent/child category path and return every level ID. */
+    private function ensure_product_category_path(array $path): array {
+        $ids = [];
+        $parent = 0;
+        foreach ($path as $name) {
+            $name = trim(sanitize_text_field((string)$name));
+            if ($name === '') continue;
+            $term = term_exists($name, 'product_cat', $parent);
+            if (!$term) $term = wp_insert_term($name, 'product_cat', ['parent'=>$parent]);
+            if (is_wp_error($term)) {
+                // Resolve a same-parent slug collision without attaching a term
+                // from a different hierarchy branch by mistake.
+                $matches = get_terms([
+                    'taxonomy'=>'product_cat','hide_empty'=>false,'name'=>$name,'parent'=>$parent,'number'=>1,
+                ]);
+                if (is_wp_error($matches) || empty($matches[0])) continue;
+                $term_id = (int)$matches[0]->term_id;
+            } else {
+                $term_id = (int)(is_array($term) ? $term['term_id'] : $term);
+            }
+            if (!$term_id) continue;
+            $ids[] = $term_id;
+            $parent = $term_id;
+        }
+        return array_values(array_unique(array_filter(array_map('intval', $ids))));
+    }
+
+    private function supplier_category_ids(int $product_id, string $supplier): array {
+        $raw = json_decode((string)get_post_meta($product_id, '_asss_supplier_category_ids_' . sanitize_key($supplier), true), true);
+        if (!is_array($raw)) $raw = [];
+        return array_values(array_unique(array_filter(array_map('intval', $raw))));
+    }
+
+    /**
+     * Apply one supplier's categories while preserving merchant categories and
+     * categories owned by every other linked supplier. Stale categories from
+     * this supplier are removed only when they are not also owned elsewhere.
+     */
+    private function sync_supplier_categories(int $product_id, array $categories, string $supplier, bool $is_new = false): void {
+        $supplier = sanitize_key($supplier) ?: 'supplier';
+        $paths = $this->normalize_supplier_category_paths($categories);
+        if (!$paths) return; // Never erase known categories because of an empty/partial supplier payload.
+
+        $new_ids = [];
+        $path_labels = [];
+        foreach ($paths as $path) {
+            $ids = $this->ensure_product_category_path($path);
+            foreach ($ids as $id) $new_ids[$id] = true;
+            $path_labels[] = implode(' > ', $path);
+        }
+        $new_ids = array_map('intval', array_keys($new_ids));
+        if (!$new_ids) return;
+
+        $suppliers = ['sanmar','ss','momentec'];
+        if (!in_array($supplier, $suppliers, true)) $suppliers[] = $supplier;
+        $owned_before = [];
+        $other_owned = [];
+        $previous = $this->supplier_category_ids($product_id, $supplier);
+
+        // Adopt the old pre-2.0.15 global ownership marker for single-supplier
+        // products so the first refresh can cleanly migrate without duplicating
+        // or accidentally treating old supplier categories as merchant-owned.
+        if (!$previous) {
+            $legacy = json_decode((string)get_post_meta($product_id, '_asss_supplier_category_ids', true), true);
+            $stored_supplier = sanitize_key((string)get_post_meta($product_id, '_asss_supplier', true));
+            if (is_array($legacy) && ($stored_supplier === $supplier || $stored_supplier !== 'multi')) {
+                $previous = array_values(array_unique(array_filter(array_map('intval', $legacy))));
+            }
+        }
+
+        foreach ($suppliers as $key) {
+            $ids = $key === $supplier ? $previous : $this->supplier_category_ids($product_id, $key);
+            foreach ($ids as $id) {
+                $owned_before[(int)$id] = true;
+                if ($key !== $supplier) $other_owned[(int)$id] = true;
+            }
+        }
+
+        $current = wp_get_object_terms($product_id, 'product_cat', ['fields'=>'ids']);
+        if (is_wp_error($current)) $current = [];
+        $current = array_values(array_unique(array_filter(array_map('intval', $current))));
+        $manual = $is_new ? [] : array_values(array_filter($current, static fn($id) => !isset($owned_before[(int)$id])));
+
+        $merged_map = [];
+        foreach ($manual as $id) $merged_map[(int)$id] = true;
+        foreach (array_keys($other_owned) as $id) $merged_map[(int)$id] = true;
+        foreach ($new_ids as $id) $merged_map[(int)$id] = true;
+
+        $default_cat = (int)get_option('default_product_cat', 0);
+        if ($default_cat && count($merged_map) > 1 && !in_array($default_cat, $manual, true)) unset($merged_map[$default_cat]);
+        $merged = array_map('intval', array_keys($merged_map));
+        wp_set_object_terms($product_id, $merged, 'product_cat', false);
+
+        update_post_meta($product_id, '_asss_supplier_category_ids_' . $supplier, wp_json_encode(array_values($new_ids)));
+        update_post_meta($product_id, '_asss_supplier_categories_' . $supplier, wp_json_encode(array_values($path_labels)));
+
+        // Keep legacy combined metadata accurate for older admin/UI code.
+        $combined_ids = [];
+        $combined_names = [];
+        foreach ($suppliers as $key) {
+            $ids = $key === $supplier ? $new_ids : $this->supplier_category_ids($product_id, $key);
+            foreach ($ids as $id) {
+                $combined_ids[(int)$id] = true;
+                $term = get_term((int)$id, 'product_cat');
+                if ($term && !is_wp_error($term)) $combined_names[mb_strtolower($term->name)] = $term->name;
+            }
+        }
+        update_post_meta($product_id, '_asss_supplier_category_ids', wp_json_encode(array_map('intval', array_keys($combined_ids))));
+        update_post_meta($product_id, '_asss_supplier_categories', wp_json_encode(array_values($combined_names)));
+        if ($path_labels) update_post_meta($product_id, '_asss_supplier_category', $path_labels[0]);
+    }
+
+    private function sync_taxonomies(int $product_id, string $brand, array $categories, string $keywords, bool $is_new, string $supplier = 'sanmar'): void {
+        $this->sync_supplier_categories($product_id, $categories, $supplier, $is_new);
         $this->sync_tags($product_id, $keywords);
         $this->sync_brand($product_id, $brand);
     }
 
     /**
-     * Apply every supplier category while preserving categories the merchant
-     * added manually. Previously Supplier Sync only kept one CATEGORY value.
+     * One-time category-only reconciliation for products imported before 2.0.15.
+     * Uses already-cached supplier data only; it does not contact supplier APIs.
      */
-    private function sync_categories(int $product_id, array $categories, bool $is_new): void {
-        $categories = array_values(array_unique(array_filter(array_map(static fn($v) => trim(sanitize_text_field((string)$v)), $categories))));
-        if (!$categories) return;
-
-        $new_ids = [];
-        foreach ($categories as $category) {
-            $term = term_exists($category, 'product_cat');
-            if (!$term) $term = wp_insert_term($category, 'product_cat');
-            if (is_wp_error($term)) continue;
-            $term_id = (int)(is_array($term) ? $term['term_id'] : $term);
-            if ($term_id) $new_ids[] = $term_id;
+    public function migrate_supplier_categories_v2015(): void {
+        if (!current_user_can('manage_woocommerce')) return;
+        if ((string)get_option('asss_v2015_supplier_categories_migrated', '') === 'yes') return;
+        $ids = get_posts([
+            'post_type'=>'product','post_status'=>'any','fields'=>'ids','posts_per_page'=>-1,'no_found_rows'=>true,
+            'meta_key'=>'_asss_sync_enabled','meta_value'=>'yes',
+        ]);
+        $updated = 0;
+        foreach ((array)$ids as $product_id) {
+            $product_id = (int)$product_id;
+            $sources = $this->multi->product_sources($product_id);
+            if (!empty($sources['sanmar']['enabled'])) {
+                $brand = trim((string)get_post_meta($product_id, '_asss_sanmar_brand', true));
+                $style = trim((string)get_post_meta($product_id, '_asss_sanmar_style', true));
+                if ($brand !== '' && $style !== '') {
+                    $data = $this->sanmar->rows_for_style($brand, $style);
+                    if (!is_wp_error($data) && !empty($data['rows'])) {
+                        $this->sync_supplier_categories($product_id, $this->categories_from_rows((array)$data['rows']), 'sanmar', false);
+                    }
+                }
+            }
+            if (!empty($sources['ss']['enabled'])) {
+                $brand_id = absint(get_post_meta($product_id, '_asss_ss_brand_id', true));
+                $style_id = absint(get_post_meta($product_id, '_asss_ss_style_id', true));
+                if ($brand_id && $style_id) {
+                    $data = $this->ss->style_product($brand_id, $style_id);
+                    if (!is_wp_error($data)) $this->sync_supplier_categories($product_id, $this->categories_from_normalized_product((array)$data), 'ss', false);
+                }
+            }
+            if (!empty($sources['momentec']['enabled'])) {
+                $style = trim((string)get_post_meta($product_id, '_asss_momentec_style', true));
+                if ($style !== '') {
+                    $data = $this->momentec->style_product($style);
+                    if (!is_wp_error($data)) $this->sync_supplier_categories($product_id, $this->categories_from_normalized_product((array)$data), 'momentec', false);
+                }
+            }
+            $updated++;
         }
-        $new_ids = array_values(array_unique(array_filter(array_map('intval', $new_ids))));
-        if (!$new_ids) return;
-
-        $previous = json_decode((string)get_post_meta($product_id, '_asss_supplier_category_ids', true), true);
-        if (!is_array($previous)) $previous = [];
-        $previous = array_values(array_unique(array_filter(array_map('intval', $previous))));
-
-        $current = wp_get_object_terms($product_id, 'product_cat', ['fields'=>'ids']);
-        if (is_wp_error($current)) $current = [];
-        $current = array_values(array_unique(array_filter(array_map('intval', $current))));
-        $manual = $is_new ? [] : array_values(array_diff($current, $previous));
-        $merged = array_values(array_unique(array_merge($manual, $new_ids)));
-        wp_set_object_terms($product_id, $merged, 'product_cat', false);
-
-        $default_cat = (int)get_option('default_product_cat', 0);
-        if ($default_cat && count($merged) > 1 && !in_array($default_cat, $manual, true) && !in_array($default_cat, $new_ids, true)) {
-            wp_remove_object_terms($product_id, [$default_cat], 'product_cat');
-        }
-
-        update_post_meta($product_id, '_asss_supplier_category_ids', wp_json_encode($new_ids));
-        update_post_meta($product_id, '_asss_supplier_categories', wp_json_encode($categories));
-        update_post_meta($product_id, '_asss_supplier_category', $categories[0]); // legacy compatibility
+        update_option('asss_v2015_supplier_categories_migrated', 'yes', false);
+        ASSS_Logger::log('v2.0.15 supplier category reconciliation completed', 'info', ['products'=>$updated]);
     }
 
     private function sync_tags(int $product_id, string $keywords): void {
@@ -2048,10 +2224,7 @@ class ASSS_Importer {
 
         $title = trim((string)($data['title'] ?? $style));
         $description = trim((string)($data['description'] ?? ''));
-        $categories = isset($data['categories']) && is_array($data['categories']) ? $data['categories'] : [];
-        $base_category = trim((string)($data['category'] ?? $data['base_category'] ?? ''));
-        if ($base_category !== '') array_unshift($categories, $base_category);
-        $categories = array_values(array_unique(array_filter(array_map('sanitize_text_field', $categories))));
+        $categories = $this->categories_from_normalized_product($data);
         $keywords = is_array($data['keywords'] ?? null) ? implode(', ', $data['keywords']) : (string)($data['keywords'] ?? '');
 
         if ($is_new) {
@@ -2088,7 +2261,7 @@ class ASSS_Importer {
         update_post_meta($product_id, '_asss_ss_color_selection_mode', $selection_mode);
         update_post_meta($product_id, '_asss_ss_selected_colors', wp_json_encode($selected_colors));
 
-        $this->sync_taxonomies($product_id, $brand, $categories, $keywords, $is_new);
+        $this->sync_taxonomies($product_id, $brand, $categories, $keywords, $is_new, 'ss');
         $common_rows = $this->ss_common_rows($variants, $data);
         $this->set_attributes($product, $common_rows);
         $this->sync_parent_shipping($product, $common_rows);
@@ -2177,12 +2350,9 @@ class ASSS_Importer {
         $product->update_meta_data('_asss_ss_specs', wp_json_encode((array)($data['specs'] ?? [])));
         $product->update_meta_data('_asss_last_product_sync', current_time('mysql'));
 
-        $categories = isset($data['categories']) && is_array($data['categories']) ? $data['categories'] : [];
-        $base = trim((string)($data['category'] ?? $data['base_category'] ?? ''));
-        if ($base !== '') array_unshift($categories, $base);
-        $categories = array_values(array_unique(array_filter(array_map('sanitize_text_field', $categories))));
+        $categories = $this->categories_from_normalized_product($data);
         $keywords = is_array($data['keywords'] ?? null) ? implode(', ', $data['keywords']) : (string)($data['keywords'] ?? '');
-        $this->sync_taxonomies($product_id, $brand, $categories, $keywords, false);
+        $this->sync_taxonomies($product_id, $brand, $categories, $keywords, false, 'ss');
 
         $common_rows = $this->ss_common_rows($variants, $data);
         $this->set_attributes($product, $common_rows);
@@ -2997,15 +3167,7 @@ class ASSS_Importer {
     }
 
     private function add_supplier_categories(int $product_id,array $categories,string $supplier): void {
-        $categories=array_values(array_unique(array_filter(array_map(static fn($v)=>trim(sanitize_text_field((string)$v)),$categories))));
-        if(!$categories)return;
-        $current=wp_get_object_terms($product_id,'product_cat',['fields'=>'ids']); if(is_wp_error($current))$current=[];
-        $ids=array_values(array_unique(array_filter(array_map('intval',$current))));
-        $new=[];
-        foreach($categories as $cat){$t=term_exists($cat,'product_cat');if(!$t)$t=wp_insert_term($cat,'product_cat');if(!is_wp_error($t)){$id=(int)(is_array($t)?$t['term_id']:$t);if($id){$ids[]=$id;$new[]=$id;}}}
-        wp_set_object_terms($product_id,array_values(array_unique($ids)),'product_cat',false);
-        update_post_meta($product_id,'_asss_supplier_category_ids_'.$supplier,wp_json_encode(array_values(array_unique($new))));
-        update_post_meta($product_id,'_asss_supplier_categories_'.$supplier,wp_json_encode($categories));
+        $this->sync_supplier_categories($product_id, $categories, $supplier, false);
     }
 
 
@@ -3306,12 +3468,12 @@ class ASSS_Importer {
         $product_id=$this->find_momentec_product($style,$brand);if($product_id&&(string)get_post_meta($product_id,'_asss_supplier',true)==='multi')return $this->link_momentec_style_to_product($product_id,$style,$selected_colors);
         if(!$product_id){$other=$this->find_product($style,$brand);if(!$other)$other=$this->find_ss_product_by_brand_style($brand,$style);if($other)return new WP_Error('existing_other_supplier','Another supplier is already linked to a WooCommerce product that appears to match '.$brand.' '.$style.' (product #'.$other.'). Link Momentec to that product instead of creating a duplicate.');}
         $product=$product_id?wc_get_product($product_id):new WC_Product_Variable();if(!$product instanceof WC_Product_Variable)return new WP_Error('product','Could not initialize WooCommerce variable product.');$is_new=!$product_id;
-        $title=trim((string)($data['title'] ?? $style));$description=trim((string)($data['description'] ?? ''));$categories=is_array($data['categories'] ?? null)?$data['categories']:[];$base=trim((string)($data['category'] ?? ''));if($base!=='')array_unshift($categories,$base);$categories=array_values(array_unique(array_filter(array_map('sanitize_text_field',$categories))));
+        $title=trim((string)($data['title'] ?? $style));$description=trim((string)($data['description'] ?? ''));$categories=$this->categories_from_normalized_product($data);
         if($is_new){$product->set_name($title?:($brand.' '.$style));$product->set_status('draft');$product->set_catalog_visibility('visible');}elseif($product->get_name()==='')$product->set_name($title?:($brand.' '.$style));
         if(!empty($this->sanmar->settings()['sync_description']))$this->sync_supplier_description($product,$description,$is_new);$this->maybe_set_momentec_parent_sku($product,$brand,$style);
         $mode=count($selected_colors)>=count($all_colors)?'all':'selected';$product->update_meta_data('_asss_supplier','momentec');$product->update_meta_data('_asss_supplier_product_key','momentec|'.strtolower($brand).'|'.strtolower($style));$product->update_meta_data('_asss_momentec_brand',$brand);$product->update_meta_data('_asss_momentec_style',$style);$product->update_meta_data('_asss_momentec_specs',wp_json_encode((array)($data['specs'] ?? [])));$product->update_meta_data('_asss_sync_enabled','yes');$product->update_meta_data('_asss_color_selection_mode',$mode);$product->update_meta_data('_asss_selected_colors',wp_json_encode($selected_colors));$product_id=$product->save();
         $this->multi->register_product_source($product_id,'momentec',['brand'=>$brand,'style'=>$style,'selection_mode'=>$mode,'selected_colors'=>$selected_colors]);update_post_meta($product_id,'_asss_momentec_color_selection_mode',$mode);update_post_meta($product_id,'_asss_momentec_selected_colors',wp_json_encode($selected_colors));
-        $this->sync_taxonomies($product_id,$brand,$categories,'',$is_new);$common=$this->ss_common_rows($variants,$data);$this->set_attributes($product,$common);$this->sync_parent_shipping($product,$common);$this->sync_momentec_bulk_order_fields($product,$data,$variants,$is_new);$product->save();
+        $this->sync_taxonomies($product_id,$brand,$categories,'',$is_new,'momentec');$common=$this->ss_common_rows($variants,$data);$this->set_attributes($product,$common);$this->sync_parent_shipping($product,$common);$this->sync_momentec_bulk_order_fields($product,$data,$variants,$is_new);$product->save();
         $audit=$this->reconcile_momentec_variations($product_id,$variants,true);if(!empty($this->sanmar->settings()['sync_images'])){$this->sync_momentec_parent_featured_image($product_id,$data,$variants);$this->queue_momentec_media_jobs($product_id,$variants);}$this->sync_managed_pricing_for_product($product_id);
         $product=wc_get_product($product_id);if($product instanceof WC_Product_Variable){$product->update_meta_data('_asss_last_product_sync',current_time('mysql'));$product->save();}WC_Product_Variable::sync($product_id);wc_delete_product_transients($product_id);do_action('asss_product_synced',$product_id,'momentec',['brand'=>$brand,'style'=>$style,'mode'=>'import']);ASSS_Logger::log('Imported/updated Momentec product','info',['product_id'=>$product_id,'brand'=>$brand,'style'=>$style,'selected_colors'=>count($selected_colors),'expected_variations'=>(int)($audit['expected'] ?? count($variants))]);return $product_id;
     }
@@ -3320,14 +3482,14 @@ class ASSS_Importer {
         $style=trim((string)get_post_meta($product_id,'_asss_momentec_style',true));if($style==='')return new WP_Error('mapping','Product is missing its Momentec style mapping.');$data=$this->momentec->style_product($style);if(is_wp_error($data))return $data;$variants=is_array($data['variants'] ?? null)?$data['variants']:[];if(!$variants)return new WP_Error('momentec_variants','No exact Momentec SKU rows are cached for this style.');
         $mode=(string)get_post_meta($product_id,'_asss_momentec_color_selection_mode',true)?: (string)get_post_meta($product_id,'_asss_color_selection_mode',true);if($mode!==''&&$mode!=='all'){$sel=json_decode((string)get_post_meta($product_id,'_asss_momentec_selected_colors',true),true);if(is_array($sel)&&$sel){$lookup=array_fill_keys(array_map('strval',$sel),true);$variants=array_values(array_filter($variants,static function($row)use($lookup){$c=trim((string)($row['color'] ?? $row['catalog_color'] ?? ''));return $c!==''&&isset($lookup[$c]);}));}}
         if(!$variants)return new WP_Error('no_variants','No Momentec variations remain after the saved color selection.');$product=wc_get_product($product_id);if(!$product instanceof WC_Product_Variable)return new WP_Error('product','Product missing or is not variable.');$brand=trim((string)($data['brand'] ?? get_post_meta($product_id,'_asss_momentec_brand',true)));if(!empty($this->sanmar->settings()['sync_description']))$this->sync_supplier_description($product,(string)($data['description'] ?? ''),false);$this->maybe_set_momentec_parent_sku($product,$brand,$style);$product->update_meta_data('_asss_momentec_brand',$brand);$product->update_meta_data('_asss_momentec_specs',wp_json_encode((array)($data['specs'] ?? [])));$product->update_meta_data('_asss_last_product_sync',current_time('mysql'));
-        $categories=is_array($data['categories'] ?? null)?$data['categories']:[];$base=trim((string)($data['category'] ?? ''));if($base!=='')array_unshift($categories,$base);$categories=array_values(array_unique(array_filter(array_map('sanitize_text_field',$categories))));$this->sync_taxonomies($product_id,$brand,$categories,'',false);$common=$this->ss_common_rows($variants,$data);$this->set_attributes($product,$common);$this->sync_parent_shipping($product,$common);$this->sync_momentec_bulk_order_fields($product,$data,$variants,false);$product->save();$this->reconcile_momentec_variations($product_id,$variants,!empty($this->sanmar->settings()['sync_new_variations']));if(!empty($this->sanmar->settings()['sync_images'])){$this->sync_momentec_parent_featured_image($product_id,$data,$variants);$this->queue_momentec_media_jobs($product_id,$variants);}$this->sync_managed_pricing_for_product($product_id);WC_Product_Variable::sync($product_id);wc_delete_product_transients($product_id);do_action('asss_product_synced',$product_id,'momentec',['brand'=>$brand,'style'=>$style,'mode'=>'repair']);return $product_id;
+        $categories=$this->categories_from_normalized_product($data);$this->sync_taxonomies($product_id,$brand,$categories,'',false,'momentec');$common=$this->ss_common_rows($variants,$data);$this->set_attributes($product,$common);$this->sync_parent_shipping($product,$common);$this->sync_momentec_bulk_order_fields($product,$data,$variants,false);$product->save();$this->reconcile_momentec_variations($product_id,$variants,!empty($this->sanmar->settings()['sync_new_variations']));if(!empty($this->sanmar->settings()['sync_images'])){$this->sync_momentec_parent_featured_image($product_id,$data,$variants);$this->queue_momentec_media_jobs($product_id,$variants);}$this->sync_managed_pricing_for_product($product_id);WC_Product_Variable::sync($product_id);wc_delete_product_transients($product_id);do_action('asss_product_synced',$product_id,'momentec',['brand'=>$brand,'style'=>$style,'mode'=>'repair']);return $product_id;
     }
 
     public function link_momentec_style_to_product(int $product_id,string $style,array $selected_colors=[]){
         $product=wc_get_product($product_id);if(!$product instanceof WC_Product_Variable)return new WP_Error('product','The target WooCommerce product is missing or is not variable.');$data=$this->momentec->style_product($style);if(is_wp_error($data))return $data;$brand=trim((string)($data['brand'] ?? ''));$style=trim((string)($data['style'] ?? $style));$variants=is_array($data['variants'] ?? null)?$data['variants']:[];if(!$variants)return new WP_Error('momentec_variants','No Momentec variations are cached for this style.');
         $all=$this->momentec_colors_from_variants($variants);$selected_colors=array_values(array_unique(array_filter(array_map('sanitize_text_field',$selected_colors))));if(!$selected_colors)$selected_colors=$all;$lookup=array_fill_keys($selected_colors,true);$variants=array_values(array_filter($variants,static function($row)use($lookup){$c=trim((string)($row['color'] ?? $row['catalog_color'] ?? ''));return $c!==''&&isset($lookup[$c]);}));if(!$variants)return new WP_Error('no_variants','No Momentec variations remain for the selected colors.');
         $mode=count($selected_colors)>=count($all)?'all':'selected';update_post_meta($product_id,'_asss_momentec_brand',$brand);update_post_meta($product_id,'_asss_momentec_style',$style);update_post_meta($product_id,'_asss_momentec_specs',wp_json_encode((array)($data['specs'] ?? [])));update_post_meta($product_id,'_asss_momentec_color_selection_mode',$mode);update_post_meta($product_id,'_asss_momentec_selected_colors',wp_json_encode($selected_colors));update_post_meta($product_id,'_asss_sync_enabled','yes');$this->multi->register_product_source($product_id,'momentec',['brand'=>$brand,'style'=>$style,'selection_mode'=>$mode,'selected_colors'=>$selected_colors]);
-        $categories=is_array($data['categories'] ?? null)?$data['categories']:[];$base=trim((string)($data['category'] ?? ''));if($base!=='')array_unshift($categories,$base);$this->add_supplier_categories($product_id,$categories,'momentec');$expected=[];$matched=0;$created=0;
+        $categories=$this->categories_from_normalized_product($data);$this->add_supplier_categories($product_id,$categories,'momentec');$expected=[];$matched=0;$created=0;
         foreach($variants as $row){if(!is_array($row))continue;$color=trim((string)($row['color'] ?? $row['catalog_color'] ?? ''));$size=trim((string)($row['size'] ?? ''));$key=(string)($row['unique_key'] ?? $row['sku'] ?? '');if($key==='')$key=$this->canonical_combo($color,$size);$expected[$key]=true;$supplier_id=(string)($row['unique_key'] ?? $row['sku'] ?? '');$vid=$this->find_momentec_variation($product_id,$supplier_id,$color,$size);if(!$vid)$vid=$this->find_variation_by_combo_any($product_id,$color,$size);if(!$vid)$vid=$this->find_variation_by_verified_size_alias($product_id,$brand,$style,$color,$size);
             if(!$vid){$r=$this->sync_momentec_variation($product_id,$row);$vid=(int)($r['variation_id'] ?? 0);if($vid)$created++;}else{$matched++;update_post_meta($vid,'_asss_momentec_sku_id',sanitize_text_field($supplier_id));update_post_meta($vid,'_asss_momentec_sku',sanitize_text_field((string)($row['sku'] ?? '')));update_post_meta($vid,'_asss_momentec_color',$color);update_post_meta($vid,'_asss_momentec_size',$size);update_post_meta($vid,'_asss_momentec_cost',(string)($row['customer_price'] ?? ''));update_post_meta($vid,'_asss_momentec_retail_price',(string)($row['retail_price'] ?? ''));$existing=wc_get_product($vid);if(!empty($this->sanmar->settings()['sync_images'])&&$existing instanceof WC_Product_Variation&&(!empty($row['gallery'])||!empty($row['primary_image'])))update_post_meta($vid,'_asss_momentec_media_pending','yes');}
             if(!$vid)continue;$this->multi->register_variation_source($vid,'momentec',['sku'=>(string)($row['sku'] ?? ''),'sku_id'=>$supplier_id,'unique_key'=>$supplier_id,'color'=>$color,'size'=>$size,'cost'=>$row['customer_price'] ?? '','retail_price'=>$row['retail_price'] ?? '','inventory_qty'=>isset($row['qty'])&&is_numeric($row['qty'])?(int)$row['qty']:null,'availability'=>(string)($row['availability'] ?? ''),'availability_date'=>(string)($row['availability_date'] ?? ''),'gallery'=>(array)($row['gallery'] ?? [])]);$this->multi->recalculate_variation_inventory($vid);
