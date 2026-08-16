@@ -1,10 +1,9 @@
-name: Build Supplier Sync v2.0.13 Featured Image Priority
+name: Build Supplier Sync v2.0.13
 
 on:
   push:
-    branches: [v2.0.13-workflow]
-    paths:
-      - '.github/workflows/build-v2.0.13-featured-image.yml'
+    branches:
+      - v2.0.13-workflow
   workflow_dispatch:
 
 permissions:
@@ -12,147 +11,44 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout main release repository
-        uses: actions/checkout@v6
-        with:
-          ref: main
-          fetch-depth: 0
-          path: release
-
-      - name: Checkout exact v2.0.13 source branch
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v5
         with:
           ref: recovery/v2.0.13-exact-source
           fetch-depth: 0
           path: source
 
-      - name: Apply v2.0.13 featured-image patch
-        shell: bash
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          path: release
+
+      - name: Patch source
         run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
+          python3 source/v2013_patch.py source
+          rm source/v2013_patch.py
 
-          root = Path('source')
-          main = root / 'all-star-supplier-sync.php'
-          text = main.read_text(encoding='utf-8')
-          text = text.replace('Version: 2.0.12', 'Version: 2.0.13', 1)
-          text = text.replace("define('ASSS_VERSION', '2.0.12');", "define('ASSS_VERSION', '2.0.13');", 1)
-          main.write_text(text, encoding='utf-8')
-
-          imp = root / 'includes/class-asss-importer.php'
-          text = imp.read_text(encoding='utf-8')
-
-          featured_pattern = re.compile(
-              r"    private function momentec_parent_featured_url\(array \$data,array \$variants\): string \{.*?\n    \}\n\n    /\*\* Attach only one parent image",
-              re.S,
-          )
-          featured_replacement = r'''    private function momentec_parent_featured_url(array $data,array $variants): string {
-        // Main product-image priority for Momentec:
-        // 1) product-level thumbnail (usually the clean catalog/product shot)
-        // 2) the first selected variation primary image
-        // 3) product-level product image
-        // 4) no automatic gallery fallback; leave empty for manual selection.
-        $thumbnail=$this->momentec_media_url((string)($data['images']['thumbnail'] ?? ''));
-        if($thumbnail!=='')return $thumbnail;
-        foreach($variants as $row){
-            if(!is_array($row))continue;
-            $primary=$this->momentec_media_url((string)($row['primary_image'] ?? ''));
-            if($primary!=='')return $primary;
-        }
-        $product=$this->momentec_media_url((string)($data['images']['product'] ?? ''));
-        if($product!=='')return $product;
-        return '';
-    }
-
-    /** Attach only one parent image'''
-          text, count = featured_pattern.subn(featured_replacement, text, count=1)
-          if count != 1:
-              raise SystemExit('Could not patch Momentec featured-image priority function')
-
-          parent_pattern = re.compile(
-              r"    private function sync_momentec_parent_media\(int \$product_id,array \$data,array \$variants\): void \{.*?\n    \}\n\n    private function momentec_row_for_variation",
-              re.S,
-          )
-          parent_replacement = r'''    private function sync_momentec_parent_media(int $product_id,array $data,array $variants): void {
-        $product=wc_get_product($product_id);if(!$product)return;
-        $urls=[];
-        // Gallery order is independent from the featured image. Keep useful
-        // supplier imagery, but never promote a gallery/lifestyle shot to the
-        // WooCommerce featured image in this background job.
-        foreach([(string)($data['images']['thumbnail'] ?? ''),(string)($data['images']['product'] ?? '')] as $raw){$u=$this->momentec_media_url($raw);if($u!=='')$urls[$u]=true;}
-        foreach($variants as $row){
-            if(!is_array($row))continue;
-            $primary=$this->momentec_media_url((string)($row['primary_image'] ?? ''));if($primary!=='')$urls[$primary]=true;
-            foreach((array)($row['gallery'] ?? []) as $raw){$u=$this->momentec_media_url((string)$raw);if($u!=='')$urls[$u]=true;}
-            if(count($urls)>=8)break;
-        }
-        if(!$urls)return;$ids=[];
-        foreach(array_slice(array_keys($urls),0,8) as $url){$id=$this->sideload($url,$product_id,'momentec');if($id)$ids[]=(int)$id;}
-        $ids=array_values(array_unique($ids));if(!$ids)return;
-        // IMPORTANT: do not change the featured image here. It was chosen by
-        // sync_momentec_parent_featured_image() using the explicit priority
-        // rule, or intentionally left empty for the merchant to choose.
-        $manual=[];foreach($product->get_gallery_image_ids() as $id)if((int)$id&&!$this->is_supplier_attachment((int)$id))$manual[]=(int)$id;
-        $primary=(int)$product->get_image_id();$supplier_gallery=array_values(array_filter($ids,static fn($id)=>(int)$id!==$primary));
-        $product->set_gallery_image_ids(array_values(array_unique(array_merge($supplier_gallery,$manual))));$product->save();
-    }
-
-    private function momentec_row_for_variation'''
-          text, count = parent_pattern.subn(parent_replacement, text, count=1)
-          if count != 1:
-              raise SystemExit('Could not patch Momentec background parent-media function')
-
-          imp.write_text(text, encoding='utf-8')
-          PY
-
-      - name: Validate PHP and featured-image rules
-        shell: bash
+      - name: Validate source
         run: |
-          set -euo pipefail
+          set -e
           find source -type f -name '*.php' -print0 | xargs -0 -n1 php -l
           grep -q 'Version: 2.0.13' source/all-star-supplier-sync.php
-          grep -q "define('ASSS_VERSION', '2.0.13')" source/all-star-supplier-sync.php
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('source/includes/class-asss-importer.php').read_text()
-          a=p.index('private function momentec_parent_featured_url')
-          b=p.index('/** Attach only one parent image',a)
-          featured=p[a:b]
-          assert featured.index("images']['thumbnail") < featured.index('primary_image') < featured.index("images']['product")
-          assert "row['gallery']" not in featured
-          a=p.index('private function sync_momentec_parent_media')
-          b=p.index('private function momentec_row_for_variation',a)
-          parent=p[a:b]
-          assert 'set_image_id' not in parent
-          assert 'sync_momentec_parent_featured_image' in p
-          assert "if($current && !$this->is_supplier_attachment($current))return;" in p
-          print('MOMENTEC_FEATURED_IMAGE_PRIORITY=PASS')
-          PY
-          ! grep -R -q 'MOMENTEC_USERNAME\|MOMENTEC_PASSWORD' source
+          python3 -c "from pathlib import Path; p=Path('source/includes/class-asss-importer.php').read_text(); a=p.index('private function momentec_parent_featured_url'); b=p.index('/** Attach only one parent image',a); f=p[a:b]; assert f.index(\"images']['thumbnail\") < f.index('primary_image') < f.index(\"images']['product\"); assert \"row['gallery']\" not in f; a=p.index('private function sync_momentec_parent_media'); b=p.index('private function momentec_row_for_variation',a); assert 'set_image_id' not in p[a:b]"
 
-      - name: Commit exact v2.0.13 source
+      - name: Save exact source
         working-directory: source
-        shell: bash
         run: |
-          set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add all-star-supplier-sync.php includes/class-asss-importer.php
+          git add -A
           git commit -m 'Release source: All Star Supplier Sync v2.0.13'
           git push origin HEAD:recovery/v2.0.13-exact-source
 
-      - name: Build package and metadata
-        shell: bash
+      - name: Build package
         run: |
-          set -euo pipefail
-          cd release
-          git pull --ff-only origin main
-          cd ..
+          set -e
           rm -rf package
           mkdir -p package/all-star-supplier-sync
           rsync -a --exclude='.git' source/ package/all-star-supplier-sync/
@@ -161,33 +57,13 @@ jobs:
           cd ../release
           unzip -t all-star-supplier-sync-2.0.13.zip >/dev/null
           unzip -p all-star-supplier-sync-2.0.13.zip all-star-supplier-sync/all-star-supplier-sync.php | grep -q 'Version: 2.0.13'
+          printf '%s\n' '{' '  "version": "2.0.13",' '  "package": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/v2.0.13/all-star-supplier-sync-2.0.13.zip",' '  "url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/tag/v2.0.13",' '  "name": "All Star Supplier Sync v2.0.13"' '}' > latest.json
+          printf '%s\n' '# All Star Supplier Sync v2.0.13' '' 'Momentec featured-image selection update.' '' '- Featured image priority: images.thumbnail, then first selected variation primary_image, then images.product.' '- Gallery/lifestyle images are never promoted to featured image by the background media job.' '- If no preferred image exists, the featured image is left for manual selection.' '- Merchant-selected featured images remain protected.' '- Existing Supplier Sync-managed Momentec featured images are re-evaluated on refresh/Quick Repair.' > RELEASE-2.0.13.md
           sha256sum all-star-supplier-sync-2.0.13.zip
-          cat > latest.json <<'JSON'
-          {
-            "version": "2.0.13",
-            "package": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/v2.0.13/all-star-supplier-sync-2.0.13.zip",
-            "url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/tag/v2.0.13",
-            "name": "All Star Supplier Sync v2.0.13"
-          }
-          JSON
-          cat > RELEASE-2.0.13.md <<'MD'
-          # All Star Supplier Sync v2.0.13
 
-          Momentec featured-image selection update.
-
-          - Main product image priority is now: product-level `images.thumbnail`, then the first selected variation `primary_image`, then product-level `images.product`.
-          - Generic variation gallery/lifestyle images are no longer automatic featured-image fallbacks.
-          - If none of the three preferred image sources exist, Supplier Sync leaves the featured image unset for manual selection.
-          - A merchant-selected featured image is never overwritten.
-          - Background parent-gallery processing can no longer replace the chosen featured image.
-          - Existing Momentec products adopt the new rule on import/refresh/Quick Repair when their current featured image is Supplier Sync-managed.
-          MD
-
-      - name: Commit package to main
+      - name: Publish package to main
         working-directory: release
-        shell: bash
         run: |
-          set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add all-star-supplier-sync-2.0.13.zip latest.json RELEASE-2.0.13.md
