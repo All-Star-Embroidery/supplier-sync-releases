@@ -1,0 +1,126 @@
+name: Build Supplier Sync v2.0.21
+
+on:
+  push:
+    paths:
+      - '.github/workflows/build-v2.0.21.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact v2.0.20 source
+        uses: actions/checkout@v6
+        with:
+          ref: recovery/v2.0.20-exact-source
+          path: src
+          fetch-depth: 0
+
+      - name: Checkout release repository
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: rel
+          fetch-depth: 0
+
+      - name: Patch exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 rel/.release-tools/patch-v2.0.21.py
+
+      - name: Validate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          find src -name '*.php' -print0 | xargs -0 -n1 php -l
+          python3 - <<'PY'
+          from pathlib import Path
+          imp=Path('src/includes/class-asss-importer.php').read_text()
+          main=Path('src/all-star-supplier-sync.php').read_text()
+          readme=Path('src/readme.txt').read_text()
+          checks={
+            'version header':'Version: 2.0.21' in main,
+            'version constant':"ASSS_VERSION', '2.0.21'" in main,
+            'stable tag':'Stable tag: 2.0.21' in readme,
+            'canonical one-size label':"return 'One Size Fits All'" in imp,
+            'global one-size migration':'migrate_standard_categories_and_one_size_v2021' in imp,
+            'parent canonicalization':"$z = $this->storefront_size_label('', '', $z);" in imp,
+            'parent rebuild fix':'$needs_parent_rebuild = true;' in imp,
+            'shared category mapper':'canonical_storefront_categories' in imp,
+            'raw category metadata':'_asss_supplier_raw_categories_' in imp,
+            'headwear canonical set':"$add('Headwear');" in imp and "$add('Hats');" in imp and "$add('Caps & Hats');" in imp,
+            'bucket hats mapping':"$add('Bucket Hats');" in imp,
+            'controlled fallback':"return ['Other Products'];" in imp,
+            'legacy OSFA output removed':"return 'OSFA';" not in imp,
+          }
+          failed=[k for k,v in checks.items() if not v]
+          print('\n'.join(f'{k}: {"PASS" if v else "FAIL"}' for k,v in checks.items()))
+          if failed: raise SystemExit('Failed invariants: '+', '.join(failed))
+          PY
+
+      - name: Save exact v2.0.21 source branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B recovery/v2.0.21-exact-source
+          git add -A
+          git commit -m 'release: exact Supplier Sync v2.0.21 source'
+          git push --force-with-lease origin recovery/v2.0.21-exact-source
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf package
+          mkdir -p package/all-star-supplier-sync
+          rsync -a --exclude='.git' src/ package/all-star-supplier-sync/
+          rm -f package/all-star-supplier-sync/.gitignore
+          cd package
+          zip -qr ../all-star-supplier-sync-2.0.21.zip all-star-supplier-sync
+          cd ..
+          SHA=$(sha256sum all-star-supplier-sync-2.0.21.zip | awk '{print $1}')
+          if gh release view v2.0.21 --repo rolejarczyk/ASE.SupplierSync-Releases >/dev/null 2>&1; then
+            gh release upload v2.0.21 all-star-supplier-sync-2.0.21.zip --clobber --repo rolejarczyk/ASE.SupplierSync-Releases
+          else
+            gh release create v2.0.21 all-star-supplier-sync-2.0.21.zip --repo rolejarczyk/ASE.SupplierSync-Releases --title 'All Star Supplier Sync v2.0.21' --notes "Shared storefront category standardization across SanMar, S&S, and Momentec; global One Size Fits All naming; fixes Momentec OS/Any Size parent-child mismatches; existing-product migration included. SHA-256: $SHA"
+          fi
+          cd rel
+          git pull --rebase origin main
+          cat > latest.json <<EOF
+          {
+            "version": "2.0.21",
+            "package": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/v2.0.21/all-star-supplier-sync-2.0.21.zip",
+            "url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/tag/v2.0.21",
+            "name": "All Star Supplier Sync v2.0.21"
+          }
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add latest.json
+          git commit -m 'release: point updater to v2.0.21' || true
+          git push origin main
+          echo "RELEASE_SHA256=$SHA"
+
+      - name: Cleanup temporary release tooling
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd rel
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git pull --rebase origin main
+          git rm -f .github/workflows/build-v2.0.21.yml .release-tools/patch-v2.0.21.py
+          rmdir .release-tools 2>/dev/null || true
+          git commit -m 'cleanup: remove v2.0.21 release tooling'
+          git push origin main
