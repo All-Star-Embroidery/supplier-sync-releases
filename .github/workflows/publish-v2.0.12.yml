@@ -1,0 +1,35 @@
+name: Publish Supplier Sync v2.0.12
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-v2.0.12.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate package
+        run: |
+          set -euo pipefail
+          test -f all-star-supplier-sync-2.0.12.zip
+          unzip -t all-star-supplier-sync-2.0.12.zip >/dev/null
+          unzip -p all-star-supplier-sync-2.0.12.zip all-star-supplier-sync/all-star-supplier-sync.php | grep -q 'Version: 2.0.12'
+          sha256sum all-star-supplier-sync-2.0.12.zip
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view v2.0.12 >/dev/null 2>&1; then
+            gh release upload v2.0.12 all-star-supplier-sync-2.0.12.zip --clobber
+            gh release edit v2.0.12 --title 'All Star Supplier Sync v2.0.12' --notes-file RELEASE-2.0.12.md
+          else
+            gh release create v2.0.12 all-star-supplier-sync-2.0.12.zip --target main --title 'All Star Supplier Sync v2.0.12' --notes-file RELEASE-2.0.12.md
+          fi
