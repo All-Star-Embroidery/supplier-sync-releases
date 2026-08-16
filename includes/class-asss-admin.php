@@ -911,8 +911,22 @@ class ASSS_Admin {
         $target_count = is_array($targets) ? count($targets) : 0;
         $ss_targets = $this->sync->inventory_targets_ss();
         $ss_target_count = is_array($ss_targets) ? count($ss_targets) : 0;
+        $momentec_targets = $this->sync->inventory_targets_momentec();
+        $momentec_target_count = is_array($momentec_targets) ? count($momentec_targets) : 0;
         $sanmar_inventory_status = get_option('asss_inventory_bridge_status', []);
         $ss_inventory_status = get_option('asss_ss_inventory_bridge_status', []);
+        $momentec_inventory_status = get_option('asss_momentec_inventory_bridge_status', []);
+        $sanmar_linked_count = count($this->sync->linked_product_ids(false, 'sanmar'));
+        $ss_linked_count = count($this->sync->linked_product_ids(false, 'ss'));
+        $momentec_linked_count = count($this->sync->linked_product_ids(false, 'momentec'));
+        $momentec_catalog_count = $this->momentec->catalog_count();
+        $momentec_catalog_meta = $this->momentec->catalog_meta();
+        $momentec_request_counts = ['pending'=>0,'processing'=>0,'failed'=>0,'complete'=>0];
+        foreach ($this->momentec->request_manifest() as $request_row) {
+            if (!is_array($request_row)) continue;
+            $request_status = sanitize_key((string)($request_row['status'] ?? ''));
+            if (isset($momentec_request_counts[$request_status])) $momentec_request_counts[$request_status]++;
+        }
         $asbo_detected = class_exists('ASBO_Plugin') || shortcode_exists('asbo_bulk_order');
         $variation_gallery_supported = defined('WC_VERSION') && version_compare(WC_VERSION, '10.9', '>=');
         $variation_gallery_enabled = !$variation_gallery_supported || (string)get_option('wc_feature_woocommerce_additional_variation_images_enabled') === 'yes';
@@ -953,11 +967,17 @@ class ASSS_Admin {
             ['GitHub inventory bridge', !empty($settings['bridge_inventory_enabled']) ? 'Enabled' : 'Disabled', !empty($settings['bridge_inventory_enabled']), 'Hourly inventory is applied through the authenticated bridge.'],
             ['Supplier cache', count($manifest) . ' synced brand' . (count($manifest) === 1 ? '' : 's'), $cache_writable, $cache_writable ? 'Per-style cache directory is writable.' : 'Uploads/cache directory is not writable.'],
             ['Live SanMar brand catalog', count($catalog) . ' canonical brands / ' . count($enabled_brands) . ' enabled', count($catalog) > 0, 'Brand discovery is case-normalized; only enabled changed brands download.'],
-            ['Active linked products', count($active_ids) . ' products / ' . $target_count . ' SanMar targets / ' . $ss_target_count . ' S&S targets', true, 'Both suppliers use exact active WooCommerce variations as their hourly inventory target set.'],
-            ['Multi-supplier coverage', (int)$source_counts['multi_products'] . ' multi-source / ' . (int)$source_counts['total_products'] . ' linked products', true, 'Products can carry SanMar and S&S simultaneously without duplicate storefront listings.'],
+            ['Active linked products', count($active_ids) . ' products / ' . $target_count . ' SanMar / ' . $ss_target_count . ' S&S / ' . $momentec_target_count . ' Momentec inventory targets', true, 'All three suppliers use exact active WooCommerce variations as their inventory target set.'],
+            ['SanMar supplier', $sanmar_linked_count . ' linked product' . ($sanmar_linked_count === 1 ? '' : 's') . ' / ' . $target_count . ' active variation target' . ($target_count === 1 ? '' : 's'), count($catalog) > 0, count($catalog) . ' canonical brands discovered; ' . count($enabled_brands) . ' enabled for catalog/product sync.'],
+            ['S&S Activewear supplier', $ss_linked_count . ' linked product' . ($ss_linked_count === 1 ? '' : 's') . ' / ' . $ss_target_count . ' active variation target' . ($ss_target_count === 1 ? '' : 's'), count($ss_catalog) > 0, count($ss_catalog) . ' brands discovered; ' . count($ss_enabled_brands) . ' enabled.'],
+            ['Momentec supplier', $momentec_linked_count . ' linked product' . ($momentec_linked_count === 1 ? '' : 's') . ' / ' . $momentec_target_count . ' active variation target' . ($momentec_target_count === 1 ? '' : 's'), $momentec_catalog_count > 0, $momentec_catalog_count . ' browseable styles cached from the official Momentec product feed.'],
+            ['Multi-supplier coverage', (int)$source_counts['multi_products'] . ' multi-source / ' . (int)$source_counts['total_products'] . ' linked products', true, 'Products can carry SanMar, S&S, and Momentec sources simultaneously without duplicate storefront listings.'],
             ['Inventory strategy', ucfirst($multi_settings['strategy']) . ' · priority ' . implode(' → ', array_map(fn($k)=>ASSS_MultiSupplier::suppliers()[$k] ?? $k, $multi_settings['priority'])), true, 'Supplier inventories remain separate in metadata; Woo stock is calculated from the configured strategy.'],
             ['SanMar hourly inventory', $target_count < 1 ? 'No active targets' : (!empty($sanmar_inventory_status['received_at']) ? 'Last success: ' . $sanmar_inventory_status['received_at'] : 'Awaiting first run'), $target_count < 1 || !empty($sanmar_inventory_status['received_at']), $target_count < 1 ? 'No active SanMar variations currently need inventory.' : 'Next nominal check: ' . $next_sanmar . '. GitHub runs at :17 each hour and may start late; last matched ' . (int)($sanmar_inventory_status['matched'] ?? 0) . ' and changed ' . (int)($sanmar_inventory_status['changed'] ?? 0) . '.'],
             ['S&S hourly inventory', $ss_target_count < 1 ? 'No active targets' : (!empty($ss_inventory_status['received_at']) ? 'Last success: ' . $ss_inventory_status['received_at'] : 'Awaiting first run'), $ss_target_count < 1 || !empty($ss_inventory_status['received_at']), $ss_target_count < 1 ? 'No active S&S variations currently need inventory.' : 'Next nominal check: ' . $next_ss . '. GitHub runs at :37 each hour and may start late; last matched ' . (int)($ss_inventory_status['matched'] ?? 0) . ' and changed ' . (int)($ss_inventory_status['changed'] ?? 0) . '.'],
+            ['Momentec catalog', $momentec_catalog_count < 1 ? 'Awaiting catalog' : $momentec_catalog_count . ' styles · last received ' . ((string)($momentec_catalog_meta['received_at'] ?? '') ?: 'unknown'), $momentec_catalog_count > 0, 'Daily GitHub catalog discovery uses the official Momentec product feed; selected styles are hydrated with customer-specific production v2 data.'],
+            ['Momentec detail queue', (int)$momentec_request_counts['pending'] . ' pending / ' . (int)$momentec_request_counts['processing'] . ' processing / ' . (int)$momentec_request_counts['failed'] . ' failed', (int)$momentec_request_counts['failed'] === 0, 'The GitHub detail worker checks approximately every five minutes. Failed rows can be retried from Add Products.'],
+            ['Momentec hourly inventory', $momentec_target_count < 1 ? 'No active targets' : (!empty($momentec_inventory_status['received_at']) ? 'Last success: ' . $momentec_inventory_status['received_at'] : 'Awaiting first run'), $momentec_target_count < 1 || !empty($momentec_inventory_status['received_at']), $momentec_target_count < 1 ? 'No active Momentec variations currently need inventory.' : 'GitHub runs at :43 each hour; last matched ' . (int)($momentec_inventory_status['matched'] ?? 0) . ' and changed ' . (int)($momentec_inventory_status['changed'] ?? 0) . '.'],
             ['ASBO integration', $asbo_detected ? 'Detected' : 'Meta contract ready', true, $asbo_detected ? 'Bulk-order shortcode/plugin is active.' : 'Supplier Sync still writes the ASBO meta contract when configured.'],
             ['Variation galleries', $variation_gallery_supported ? ($variation_gallery_enabled ? 'Enabled' : 'Feature available but OFF') : 'WooCommerce legacy/fallback mode', $variation_gallery_enabled, $variation_gallery_enabled ? 'Variation gallery storage is ready.' : 'Enable WooCommerce → Settings → Advanced → Features → Variation gallery.'],
             ['Legacy direct inventory cron', $hourly_fallback ? 'Scheduled' : 'Off', empty($settings['hourly_inventory_sync']) ? !$hourly_fallback : $hourly_fallback, 'V2 production uses GitHub; direct WordPress SFTP is fallback-only.'],
