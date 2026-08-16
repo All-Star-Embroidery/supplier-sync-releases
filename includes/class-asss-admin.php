@@ -143,6 +143,26 @@ class ASSS_Admin {
             exit;
         }
 
+        if (!empty($_POST['asss_momentec_queue_style'])) {
+            check_admin_referer('asss_momentec_catalog');
+            $style=sanitize_text_field(wp_unslash((string)$_POST['asss_momentec_queue_style']));
+            if($style===''){
+                wp_safe_redirect(add_query_arg(['page'=>'asss-suppliers','supplier'=>'momentec','asss_err'=>'Invalid Momentec style.'],admin_url('admin.php')));exit;
+            }
+            $result=$this->momentec->queue_style_requests([$style],get_current_user_id(),true);
+            $args=[
+                'page'=>'asss-suppliers',
+                'supplier'=>'momentec',
+                'q'=>sanitize_text_field(wp_unslash((string)($_POST['return_q'] ?? ''))),
+                'brand'=>sanitize_text_field(wp_unslash((string)($_POST['return_brand'] ?? ''))),
+                'category'=>sanitize_text_field(wp_unslash((string)($_POST['return_category'] ?? ''))),
+                'catalog_page'=>max(1,absint($_POST['return_catalog_page'] ?? 1)),
+            ];
+            if(!empty($result['queued'])) $args['asss_msg']='Preparing Momentec style '.$style.' for import. GitHub will fetch customer-specific pricing, exact variations, inventory, and galleries automatically.';
+            else $args['asss_err']='Momentec style '.$style.' could not be queued for import.';
+            wp_safe_redirect(add_query_arg($args,admin_url('admin.php')));exit;
+        }
+
         if (!empty($_POST['asss_momentec_queue_styles'])) {
             check_admin_referer('asss_momentec_catalog');
             $styles=array_values(array_unique(array_filter(array_map('sanitize_text_field',(array)($_POST['momentec_styles'] ?? [])))));
@@ -334,12 +354,13 @@ class ASSS_Admin {
             foreach((array)($facets['categories'] ?? []) as $value)echo '<option '.selected($category,$value,false).' value="'.esc_attr($value).'">'.esc_html($value).'</option>';
             echo '</select></td></tr><tr><th>Search</th><td><input class="regular-text" name="q" value="'.esc_attr($search).'" placeholder="Style, product, brand, division, or category"> <button class="button button-primary">Browse Catalog</button></td></tr></table></form>';
 
-            echo '<p><strong>'.number_format_i18n((int)$catalog['total']).'</strong> matching styles. Select one or more styles and click <strong>Fetch / Refresh Customer Details</strong>. GitHub will securely hydrate them with your Momentec account pricing, exact Color+Size SKUs, inventory, and galleries; they will then become ready for Review &amp; Import.</p>';
+            echo '<p><strong>'.number_format_i18n((int)$catalog['total']).'</strong> matching styles. Every style now has its own <strong>Import</strong> action. If customer-specific details are not cached yet, clicking Import automatically queues that one style for secure GitHub hydration; once ready, Import opens the normal review/color-selection screen. You can still use the checkboxes for optional bulk preparation.</p>';
             if(empty($catalog['rows'])){echo '<p><em>No Momentec catalog styles match these filters.</em></p>';$this->wrap_end();return;}
 
             echo '<style>.asss-momentec-table{width:100%;border-collapse:collapse}.asss-momentec-table th,.asss-momentec-table td{text-align:left;vertical-align:middle;padding:10px 12px;border-right:1px solid #e2e4e7;border-bottom:1px solid #e2e4e7}.asss-momentec-table th:last-child,.asss-momentec-table td:last-child{border-right:0}.asss-momentec-status{display:inline-block;padding:3px 7px;border-radius:999px;background:#f0f0f1;font-size:12px}.asss-momentec-status.ready{background:#d7f0df}.asss-momentec-status.pending{background:#fff3cd}.asss-momentec-status.failed{background:#f8d7da}</style>';
             echo '<form method="post">';wp_nonce_field('asss_momentec_catalog');
-            echo '<div style="margin:12px 0"><button class="button button-primary" name="asss_momentec_queue_styles" value="1">Fetch / Refresh Customer Details</button> <span class="description">The GitHub worker checks the queue every five minutes.</span></div>';
+            echo '<input type="hidden" name="return_q" value="'.esc_attr($search).'"><input type="hidden" name="return_brand" value="'.esc_attr($brand).'"><input type="hidden" name="return_category" value="'.esc_attr($category).'"><input type="hidden" name="return_catalog_page" value="'.(int)$catalog['page'].'">';
+            echo '<div style="margin:12px 0"><button class="button" name="asss_momentec_queue_styles" value="1">Prepare Selected for Import</button> <span class="description">Optional bulk action. Each row also has its own Import button.</span></div>';
             echo '<table class="widefat striped asss-momentec-table"><thead><tr><th style="width:34px"><input type="checkbox" onclick="document.querySelectorAll(\'.asss-momentec-pick\').forEach(el=>el.checked=this.checked)"></th><th style="width:68px">Image</th><th>Product</th><th>Style</th><th>Brand</th><th>Category</th><th>Colors</th><th>Sizes</th><th>Exact SKUs</th><th>Status</th><th>Action</th></tr></thead><tbody>';
             foreach($catalog['rows'] as $row){
                 $style=(string)($row['style'] ?? '');$image=(string)($row['image'] ?? '');$hydrated=!empty($row['hydrated']);$request_status=(string)($row['request_status'] ?? '');
@@ -352,12 +373,19 @@ class ASSS_Admin {
                 elseif($request_status==='failed'){echo '<span class="asss-momentec-status failed">Failed</span>';if(!empty($row['request_message']))echo '<br><small>'.esc_html((string)$row['request_message']).'</small>';}
                 else echo '<span class="asss-momentec-status">Needs details</span>';
                 echo '</td><td>';
-                if($hydrated){$review=add_query_arg(['page'=>'asss-momentec-review','style'=>$style],admin_url('admin.php'));echo '<a class="button button-primary" href="'.esc_url($review).'">Review &amp; Import</a>';}
-                elseif(in_array($request_status,['pending','processing'],true))echo '<span class="description">Automatic GitHub hydration queued</span>';
-                else echo '<span class="description">Select this row above</span>';
+                if($hydrated){
+                    $review=add_query_arg(['page'=>'asss-momentec-review','style'=>$style],admin_url('admin.php'));
+                    echo '<a class="button button-primary" href="'.esc_url($review).'">Import</a>';
+                } elseif(in_array($request_status,['pending','processing'],true)) {
+                    echo '<button class="button" type="button" disabled>Import queued</button>';
+                } elseif($request_status==='failed') {
+                    echo '<button class="button button-primary" name="asss_momentec_queue_style" value="'.esc_attr($style).'">Retry Import</button>';
+                } else {
+                    echo '<button class="button button-primary" name="asss_momentec_queue_style" value="'.esc_attr($style).'">Import</button>';
+                }
                 echo '</td></tr>';
             }
-            echo '</tbody></table><div style="margin:12px 0"><button class="button button-primary" name="asss_momentec_queue_styles" value="1">Fetch / Refresh Customer Details</button></div></form>';
+            echo '</tbody></table><div style="margin:12px 0"><button class="button" name="asss_momentec_queue_styles" value="1">Prepare Selected for Import</button></div></form>';
 
             if((int)$catalog['pages']>1){
                 echo '<div class="tablenav"><div class="tablenav-pages">';
