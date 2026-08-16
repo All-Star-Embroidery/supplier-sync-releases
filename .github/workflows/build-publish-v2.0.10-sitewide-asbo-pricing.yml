@@ -1,0 +1,162 @@
+name: Build and Publish Supplier Sync v2.0.10
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-publish-v2.0.10-sitewide-asbo-pricing.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout release repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          path: release
+
+      - name: Checkout exact v2.0.9 source
+        uses: actions/checkout@v6
+        with:
+          ref: recovery/v2.0.9-exact-source
+          path: source
+
+      - name: Apply v2.0.10 site-wide ASBO pricing patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 release/release-tools/v210_patch.py source
+
+      - name: Validate PHP and universal pricing ladder
+        shell: bash
+        run: |
+          set -euo pipefail
+          find source -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+          grep -q 'Version: 2.0.10' source/all-star-supplier-sync.php
+          grep -q "define('ASSS_VERSION', '2.0.10')" source/all-star-supplier-sync.php
+          grep -q "enforce_sitewide_asbo_pricing_v210" source/all-star-supplier-sync.php
+          grep -q "meta_key' => '_asbo_enabled'" source/includes/class-asss-importer.php
+          grep -q "6=>0.0, 9=>1.0, 12=>2.0, 24=>3.0, 48=>4.0, 96=>6.0, 144=>7.0, 288=>9.0" source/includes/class-asss-importer.php
+          grep -q "normalize_sitewide_asbo_matrix" source/includes/class-asss-importer.php
+          grep -q "sitewide_asbo_fallback_base" source/includes/class-asss-importer.php
+          grep -q "ASBO base pricing ownership changed to merchant" source/includes/class-asss-importer.php
+
+      - name: Validate scope and merchant base preservation
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Universal enforcement must target ASBO enablement, not supplier ownership.
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('source/includes/class-asss-importer.php').read_text()
+          start=p.index('public function enforce_sitewide_asbo_pricing_v210')
+          end=p.index('\n    /**', start+20) if '\n    /**' in p[start+20:] else len(p)
+          block=p[start:end]
+          assert "'_asbo_enabled'" in block
+          assert "'_asss_supplier'" not in block
+          assert "'_asss_asbo_pricing_managed'" not in block
+          # Existing decoration method labels and first-tier bases must be preserved.
+          norm_start=p.index('private function normalize_sitewide_asbo_matrix')
+          norm_end=p.index('\n    /**', norm_start+20)
+          norm=p[norm_start:norm_end]
+          assert "$label . '|'" in norm
+          assert '$base = (float)$tiers[$first_qty]' in norm
+          print('SITEWIDE_SCOPE_AND_BASE_PRESERVATION=PASS')
+          PY
+
+      - name: Validate Momentec credential boundary remains unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -R -q 'ASSS_MOMENTEC_USERNAME\|ASSS_MOMENTEC_PASSWORD' source
+          ! grep -R -q 'MOMENTEC_USERNAME\|MOMENTEC_PASSWORD' source
+          ! grep -R -q 'name="momentec_username"\|name="momentec_password"\|name="momentec_api_key"' source
+
+      - name: Build and validate WordPress plugin ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf package
+          mkdir -p package/all-star-supplier-sync
+          rsync -a --exclude='.git' source/ package/all-star-supplier-sync/
+          cd package
+          zip -qr ../release/all-star-supplier-sync-2.0.10.zip all-star-supplier-sync
+          cd ../release
+          unzip -t all-star-supplier-sync-2.0.10.zip >/dev/null
+          unzip -p all-star-supplier-sync-2.0.10.zip all-star-supplier-sync/all-star-supplier-sync.php | grep -q 'Version: 2.0.10'
+          sha256sum all-star-supplier-sync-2.0.10.zip
+
+      - name: Prepare release metadata
+        working-directory: release
+        shell: bash
+        run: |
+          cat > latest.json <<'JSON'
+          {
+            "version": "2.0.10",
+            "package": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/v2.0.10/all-star-supplier-sync-2.0.10.zip",
+            "url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/tag/v2.0.10",
+            "name": "All Star Supplier Sync v2.0.10"
+          }
+          JSON
+          cat > RELEASE-2.0.10.md <<'MD'
+          # All Star Supplier Sync v2.0.10
+
+          Site-wide ASBO quantity pricing policy.
+
+          The All Star bulk pricing ladder now applies to **every WooCommerce product enabled for ASBO**, not only Supplier Sync-managed/imported products:
+
+          - **6+**: base price
+          - **9+**: $1.00 off per item
+          - **12+**: $2.00 off per item
+          - **24+**: $3.00 off per item
+          - **48+**: $4.00 off per item
+          - **96+**: $6.00 off per item
+          - **144+**: $7.00 off per item
+          - **288+**: $9.00 off per item
+
+          Existing ASBO products preserve each decoration method's current starting price and surcharge; only the quantity tiers are normalized. This includes old products, manually created products, SanMar, S&S, Momentec, and multi-supplier products.
+
+          Supplier-managed products remain supplier-managed unless the merchant changes their base price. A merchant base-price edit hands price ownership back to the merchant while the universal quantity ladder remains enforced.
+          MD
+
+      - name: Publish exact v2.0.10 source branch
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Release source: All Star Supplier Sync v2.0.10'
+          git push --force origin HEAD:recovery/v2.0.10-exact-source
+
+      - name: Commit v2.0.10 package and metadata
+        working-directory: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add all-star-supplier-sync-2.0.10.zip latest.json RELEASE-2.0.10.md
+          git commit -m 'release: All Star Supplier Sync v2.0.10'
+          git push origin main
+
+      - name: Publish GitHub release
+        working-directory: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v2.0.10 >/dev/null 2>&1; then
+            gh release upload v2.0.10 all-star-supplier-sync-2.0.10.zip --clobber
+            gh release edit v2.0.10 --title 'All Star Supplier Sync v2.0.10' --notes-file RELEASE-2.0.10.md
+          else
+            gh release create v2.0.10 all-star-supplier-sync-2.0.10.zip --target main --title 'All Star Supplier Sync v2.0.10' --notes-file RELEASE-2.0.10.md
+          fi
