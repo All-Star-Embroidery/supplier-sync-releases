@@ -32,7 +32,6 @@ jobs:
         run: |
           set -euo pipefail
           python3 release/release-tools/v207_patch.py source
-          # Avoid requiring mbstring for truncating safe queue error messages.
           sed -i 's/mb_substr(/substr(/g' source/includes/class-asss-momentec.php
 
       - name: Validate PHP and catalog integration
@@ -156,3 +155,5 @@ jobs:
           else
             gh release create v2.0.7 all-star-supplier-sync-2.0.7.zip --target main --title 'All Star Supplier Sync v2.0.7' --notes-file RELEASE-2.0.7.md
           fi
+
+# trigger registered workflow
