@@ -100,6 +100,15 @@ class ASSS_Bridge {
             'permission_callback' => [$this, 'authorize'],
         ]);
 
+        register_rest_route('asss/v1', '/bridge/momentec/catalog/batch', [
+            'methods' => 'POST', 'callback' => [$this, 'receive_momentec_catalog_batch'], 'permission_callback' => [$this, 'authorize'],
+        ]);
+        register_rest_route('asss/v1', '/bridge/momentec/requests', [
+            'methods' => 'GET', 'callback' => [$this, 'momentec_requests'], 'permission_callback' => [$this, 'authorize'],
+        ]);
+        register_rest_route('asss/v1', '/bridge/momentec/request-status', [
+            'methods' => 'POST', 'callback' => [$this, 'momentec_request_status'], 'permission_callback' => [$this, 'authorize'],
+        ]);
         register_rest_route('asss/v1', '/bridge/momentec/style', [
             'methods' => 'POST', 'callback' => [$this, 'receive_momentec_style'], 'permission_callback' => [$this, 'authorize'],
         ]);
@@ -429,7 +438,42 @@ class ASSS_Bridge {
             ],
             'inventory'=>get_option('asss_inventory_bridge_status', []),
             'ss_inventory'=>get_option('asss_ss_inventory_bridge_status', []),
+            'momentec'=>$this->momentec->status(),
         ], 200);
+    }
+
+    public function receive_momentec_catalog_batch(WP_REST_Request $request) {
+        $payload=$request->get_json_params();
+        if(!is_array($payload))return new WP_Error('momentec_catalog_payload','Momentec catalog payload must be JSON.',['status'=>400]);
+        $result=$this->momentec->save_catalog_chunk(
+            sanitize_text_field((string)($payload['batch_id'] ?? '')),
+            (int)($payload['chunk_index'] ?? -1),
+            absint($payload['chunk_count'] ?? 0),
+            is_array($payload['products'] ?? null)?$payload['products']:[],
+            is_array($payload['meta'] ?? null)?$payload['meta']:[]
+        );
+        if(is_wp_error($result))return $result;
+        if(!empty($result['complete']))ASSS_Logger::log('Momentec official browse catalog updated','info',['styles'=>(int)($result['styles'] ?? 0),'source_rows'=>(int)($result['source_rows'] ?? 0)]);
+        return rest_ensure_response(array_merge(['ok'=>true,'supplier'=>'momentec'],$result));
+    }
+
+    public function momentec_requests(WP_REST_Request $request) {
+        $limit=absint($request->get_param('limit') ?: 3);
+        $rows=$this->momentec->pending_requests($limit);
+        return rest_ensure_response(['ok'=>true,'supplier'=>'momentec','count'=>count($rows),'requests'=>$rows]);
+    }
+
+    public function momentec_request_status(WP_REST_Request $request) {
+        $payload=$request->get_json_params();
+        if(!is_array($payload))return new WP_Error('momentec_request_payload','Momentec request status payload must be JSON.',['status'=>400]);
+        $result=$this->momentec->set_request_status(
+            sanitize_text_field((string)($payload['request_id'] ?? '')),
+            sanitize_text_field((string)($payload['style'] ?? '')),
+            sanitize_key((string)($payload['status'] ?? '')),
+            sanitize_text_field((string)($payload['message'] ?? ''))
+        );
+        if(is_wp_error($result))return $result;
+        return rest_ensure_response(['ok'=>true,'supplier'=>'momentec','style'=>(string)($result['style'] ?? ''),'status'=>(string)($result['status'] ?? '')]);
     }
 
     public function receive_momentec_style(WP_REST_Request $request) {
