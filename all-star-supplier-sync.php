@@ -2,7 +2,7 @@
 /**
  * Plugin Name: All Star Supplier Sync
  * Description: Curated supplier-to-WooCommerce synchronization framework. SanMar, S&S Activewear, and Momentec production supplier connectors with full catalog browsing through GitHub Actions.
- * Version: 2.0.9
+ * Version: 2.0.10
  * Author: All Star
  * Update URI: https://github.com/rolejarczyk/ASE.SupplierSync-Releases
  * Requires at least: 6.4
@@ -13,7 +13,7 @@
 
 if (!defined('ABSPATH')) exit;
 
-define('ASSS_VERSION', '2.0.9');
+define('ASSS_VERSION', '2.0.10');
 define('ASSS_FILE', __FILE__);
 define('ASSS_DIR', plugin_dir_path(__FILE__));
 define('ASSS_URL', plugin_dir_url(__FILE__));
@@ -72,6 +72,7 @@ final class ASSS_Plugin {
         $this->updater = new ASSS_Updater($this->sanmar, ASSS_FILE);
         $this->admin = new ASSS_Admin($this->sanmar, $this->ss, $this->momentec, $this->importer, $this->sync, $this->multi, $this->updater);
         add_action('admin_init', [$this, 'maybe_migrate_managed_asbo_pricing_v209']);
+        add_action('admin_init', [$this, 'enforce_sitewide_asbo_pricing_v210'], 30);
         $this->reconcile_fallback_schedules();
 
         // WooCommerce 10.9+ supports native variation galleries. Supplier Sync
@@ -104,6 +105,22 @@ final class ASSS_Plugin {
         if (!empty($result['complete'])) {
             update_option('asss_managed_asbo_pricing_schema', '2.0.9', false);
         }
+    }
+
+
+    /**
+     * v2.0.10 makes the All Star quantity ladder a site-wide ASBO policy.
+     * Every bulk-order-enabled product is normalized, regardless of whether it
+     * came from Supplier Sync or was created manually. This runs in WooCommerce
+     * admin requests so newly created/manual products are covered too.
+     */
+    public function enforce_sitewide_asbo_pricing_v210(): void {
+        if (!current_user_can('manage_woocommerce')) return;
+        static $ran = false;
+        if ($ran) return;
+        $ran = true;
+        $this->importer->enforce_sitewide_asbo_pricing_v210();
+        update_option('asss_sitewide_asbo_pricing_schema', '2.0.10', false);
     }
 
 
