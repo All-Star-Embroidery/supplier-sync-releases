@@ -30,6 +30,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('rel/.release-tools/patch-v2.0.18.py')
+          s=p.read_text()
+          old="    s2, n = re.subn(pattern, repl, s, count=1, flags=flags)"
+          new="    replacement = repl if callable(repl) else (lambda _m: repl)\n    s2, n = re.subn(pattern, replacement, s, count=1, flags=flags)"
+          if old not in s: raise SystemExit('patcher sub_once line not found')
+          p.write_text(s.replace(old,new,1))
+          PY
           python3 rel/.release-tools/patch-v2.0.18.py
 
       - name: Validate PHP and v2.0.18 invariants
@@ -110,6 +119,8 @@ jobs:
         run: |
           set -euo pipefail
           cd rel
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git pull --rebase origin main
           git rm -f .github/workflows/build-v2.0.18.yml .release-tools/patch-v2.0.18.py
           rmdir .release-tools 2>/dev/null || true
