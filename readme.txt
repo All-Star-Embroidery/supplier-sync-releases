@@ -41,6 +41,14 @@ Core V2 behavior:
 
 == Changelog ==
 
+= 2.0.17 =
+* Unified storefront-vs-reference media policy across SanMar, S&S Activewear, and Momentec.
+* Supplier swatch sheets, color boards/chips, charts, unknown asset types, and Momentec alternate media are retained as supplier reference metadata but excluded from WooCommerce featured/product/variation galleries.
+* SanMar COLOR_SWATCH_IMAGE is no longer imported into the customer-facing product gallery.
+* SanMar featured media now prefers real product photography before generic product imagery.
+* Momentec galleries now trust only known photographic view types; alternate/unknown media stays reference-only.
+* Quick Repair/refresh removes previously imported Supplier Sync-owned reference graphics while preserving merchant-added featured/gallery images.
+
 = 2.0.16 =
 * S&S full-color boards, swatch sheets, generic style images, and unknown media asset types are excluded from customer-facing product and variation galleries.
 * Only verified product photography (front, side, back, direct-side, and on-model angles) can enter S&S storefront galleries.
