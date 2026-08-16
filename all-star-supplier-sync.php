@@ -2,7 +2,7 @@
 /**
  * Plugin Name: All Star Supplier Sync
  * Description: Curated supplier-to-WooCommerce synchronization framework. SanMar, S&S Activewear, and Momentec production supplier connectors with full catalog browsing through GitHub Actions.
- * Version: 2.0.8
+ * Version: 2.0.9
  * Author: All Star
  * Update URI: https://github.com/rolejarczyk/ASE.SupplierSync-Releases
  * Requires at least: 6.4
@@ -13,7 +13,7 @@
 
 if (!defined('ABSPATH')) exit;
 
-define('ASSS_VERSION', '2.0.8');
+define('ASSS_VERSION', '2.0.9');
 define('ASSS_FILE', __FILE__);
 define('ASSS_DIR', plugin_dir_path(__FILE__));
 define('ASSS_URL', plugin_dir_url(__FILE__));
@@ -71,6 +71,7 @@ final class ASSS_Plugin {
         $this->bridge = new ASSS_Bridge($this->sanmar, $this->ss, $this->momentec, $this->sync);
         $this->updater = new ASSS_Updater($this->sanmar, ASSS_FILE);
         $this->admin = new ASSS_Admin($this->sanmar, $this->ss, $this->momentec, $this->importer, $this->sync, $this->multi, $this->updater);
+        add_action('admin_init', [$this, 'maybe_migrate_managed_asbo_pricing_v209']);
         $this->reconcile_fallback_schedules();
 
         // WooCommerce 10.9+ supports native variation galleries. Supplier Sync
@@ -88,6 +89,21 @@ final class ASSS_Plugin {
         // that as an explicit restore. Automatic supplier jobs never republish an
         // archived parent on their own.
         add_action('woocommerce_admin_process_product_object', [$this, 'maybe_restore_supplier_product'], 5);
+    }
+
+
+    /**
+     * v2.0.9 changes only the quantity-discount ladder for matrices that are
+     * still owned by Supplier Sync. Merchant-edited matrices are detected by
+     * the importer and permanently left alone.
+     */
+    public function maybe_migrate_managed_asbo_pricing_v209(): void {
+        if (!current_user_can('manage_woocommerce')) return;
+        if ((string)get_option('asss_managed_asbo_pricing_schema', '') === '2.0.9') return;
+        $result = $this->importer->migrate_managed_asbo_pricing_v209();
+        if (!empty($result['complete'])) {
+            update_option('asss_managed_asbo_pricing_schema', '2.0.9', false);
+        }
     }
 
 

@@ -603,7 +603,8 @@ class ASSS_Importer {
     }
 
     private function build_managed_asbo_matrix(float $main_price): string {
-        $embroidery = [1=>$main_price, 20=>$main_price-2.0, 50=>$main_price-4.0, 100=>$main_price-6.0];
+        // All Star bulk hat discount ladder: fixed dollars off per item.
+        $embroidery = [6=>$main_price, 9=>$main_price-1.0, 12=>$main_price-2.0, 24=>$main_price-3.0, 48=>$main_price-4.0, 96=>$main_price-6.0, 144=>$main_price-7.0, 288=>$main_price-9.0];
         $format = static function(float $value): string {
             return number_format(max(0.01, $value), 2, '.', '');
         };
@@ -642,6 +643,50 @@ class ASSS_Importer {
         update_post_meta($product_id, '_asss_asbo_pricing_last_value', $matrix);
         update_post_meta($product_id, '_asss_asbo_pricing_basis_main', (string)wc_format_decimal($main_price, wc_get_price_decimals()));
         update_post_meta($product_id, '_asss_asbo_pricing_basis_supplier', sanitize_key($basis_supplier));
+    }
+
+
+    /**
+     * Upgrade existing Supplier Sync-owned ASBO matrices to the v2.0.9 ladder
+     * without recalculating their base selling price. The saved pricing basis is
+     * reused so this migration changes only quantity discounts.
+     */
+    public function migrate_managed_asbo_pricing_v209(): array {
+        $ids = get_posts([
+            'post_type' => 'product',
+            'post_status' => ['publish','draft','private','pending'],
+            'posts_per_page' => -1,
+            'fields' => 'ids',
+            'no_found_rows' => true,
+            'meta_key' => '_asss_asbo_pricing_managed',
+            'meta_value' => 'yes',
+        ]);
+        $updated = 0;
+        $merchant_owned = 0;
+        $deferred = 0;
+        foreach ((array)$ids as $product_id) {
+            $product_id = (int)$product_id;
+            if ($product_id < 1) continue;
+            $main = (float)get_post_meta($product_id, '_asss_asbo_pricing_basis_main', true);
+            if ($main <= 0) {
+                $deferred++;
+                continue;
+            }
+            $basis_supplier = (string)get_post_meta($product_id, '_asss_asbo_pricing_basis_supplier', true);
+            $candidate = $this->build_managed_asbo_matrix($main);
+            if (!$this->managed_asbo_matrix_can_update($product_id, $candidate)) {
+                $merchant_owned++;
+                continue;
+            }
+            $this->apply_managed_asbo_matrix($product_id, $main, $basis_supplier ?: 'mixed');
+            $updated++;
+        }
+        ASSS_Logger::log('v2.0.9 managed ASBO pricing ladder migration completed', 'info', [
+            'updated'=>$updated,
+            'merchant_owned'=>$merchant_owned,
+            'deferred'=>$deferred,
+        ]);
+        return ['complete'=>true,'updated'=>$updated,'merchant_owned'=>$merchant_owned,'deferred'=>$deferred];
     }
 
     /**
