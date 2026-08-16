@@ -339,8 +339,9 @@ class ASSS_Momentec {
         update_option(self::REQUEST_OPTION,$requests,false);
     }
 
-    public function catalog_search(string $search='', string $brand='', string $category='', int $page=1, int $per_page=50): array {
+    public function catalog_search(string $search='', string $brand='', string $category='', int $page=1, int $per_page=50, string $view='all'): array {
         $needle=mb_strtolower(trim($search)); $brand=trim($brand); $category=trim($category); $rows=[];
+        $view=in_array($view,['all','ready'],true)?$view:'all';
         $hydrated=$this->style_manifest();
         foreach ((array)($this->catalog_data()['products'] ?? []) as $row) {
             if(!is_array($row))continue;
@@ -354,6 +355,7 @@ class ASSS_Momentec {
                 if(mb_strpos($hay,$needle)===false)continue;
             }
             $style=(string)($row['style'] ?? ''); $key=$this->style_key($style); $request=$this->request_for_style($style);
+            if($view==='ready' && !isset($hydrated[$key]))continue;
             $row['hydrated']=isset($hydrated[$key]);
             $row['request_status']=sanitize_key((string)($request['status'] ?? ''));
             $row['request_message']=sanitize_text_field((string)($request['message'] ?? ''));

@@ -4,7 +4,7 @@ Tags: woocommerce, supplier, inventory, sanmar, ssactivewear, github-actions
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 2.0.19
+Stable tag: 2.0.20
 License: Proprietary
 
 Curated multi-supplier-to-WooCommerce synchronization for All Star. SanMar and S&S Activewear connectors included.
@@ -40,6 +40,13 @@ Core V2 behavior:
 6. Use Suppliers -> Add Products to import new styles or explicitly link a second supplier to an existing Brand + Style product.
 
 == Changelog ==
+
+= 2.0.20 =
+* Moved bridge-token regeneration to a bottom-of-page Danger Zone and added acknowledgement, typed REGENERATE confirmation, browser confirmation, and server-side enforcement before a token can change.
+* Newly created SanMar, S&S, and Momentec variable products now default to the first alphabetical real variation combination (Color, then Size), guaranteeing WooCommerce defaults point to a sellable child. Existing products/defaults are not changed.
+* Added a Momentec Ready to Import view on Add Products for styles whose secure GitHub customer-detail hydration has completed.
+* Momentec queue actions now preserve the current search, brand/category filters, catalog page, and All/Ready view so long catalog workflows do not reset unexpectedly.
+* Updated plugin readme Stable Tag to match the current release.
 
 = 2.0.19 =
 * Corrected S&S placeholder cleanup for style-level TN assets such as CCRC0TN and FF180APTN; these are treated as supplier reference media rather than storefront photography.

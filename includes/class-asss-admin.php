@@ -74,6 +74,11 @@ class ASSS_Admin {
 
         if (!empty($_POST['asss_regen_bridge'])) {
             check_admin_referer('asss_settings');
+            $ack = !empty($_POST['asss_regen_ack']);
+            $phrase = strtoupper(trim(sanitize_text_field(wp_unslash((string)($_POST['asss_regen_confirm'] ?? '')))));
+            if (!$ack || $phrase !== 'REGENERATE') {
+                $this->redir('asss-settings', '', 'Bridge token was not changed. Check the confirmation box and type REGENERATE exactly to generate a new token.');
+            }
             $new = $this->sanmar->settings();
             $new['bridge_token'] = wp_generate_password(48, false, false);
             $new['bridge_enabled'] = 1;
@@ -163,6 +168,7 @@ class ASSS_Admin {
                 'brand'=>sanitize_text_field(wp_unslash((string)($_POST['return_brand'] ?? ''))),
                 'category'=>sanitize_text_field(wp_unslash((string)($_POST['return_category'] ?? ''))),
                 'catalog_page'=>max(1,absint($_POST['return_catalog_page'] ?? 1)),
+                'momentec_view'=>in_array(sanitize_key((string)($_POST['return_momentec_view'] ?? 'all')),['all','ready'],true)?sanitize_key((string)($_POST['return_momentec_view'] ?? 'all')):'all',
             ];
             if(!empty($result['queued'])) $args['asss_msg']='Preparing Momentec style '.$style.' for import. GitHub will fetch customer-specific pricing, exact variations, inventory, and galleries automatically.';
             else $args['asss_err']='Momentec style '.$style.' could not be queued for import.';
@@ -178,7 +184,8 @@ class ASSS_Admin {
             $result=$this->momentec->queue_style_requests($styles,get_current_user_id(),true);
             $message='Queued '.(int)$result['queued'].' Momentec style'.((int)$result['queued']===1?'':'s').' for customer-specific production details.';
             if(!empty($result['unknown']))$message.=' '.count($result['unknown']).' unknown style(s) were skipped.';
-            wp_safe_redirect(add_query_arg(['page'=>'asss-suppliers','supplier'=>'momentec','asss_msg'=>$message],admin_url('admin.php')));exit;
+            $view=in_array(sanitize_key((string)($_POST['return_momentec_view'] ?? 'all')),['all','ready'],true)?sanitize_key((string)($_POST['return_momentec_view'] ?? 'all')):'all';
+            wp_safe_redirect(add_query_arg(['page'=>'asss-suppliers','supplier'=>'momentec','q'=>sanitize_text_field(wp_unslash((string)($_POST['return_q'] ?? ''))),'brand'=>sanitize_text_field(wp_unslash((string)($_POST['return_brand'] ?? ''))),'category'=>sanitize_text_field(wp_unslash((string)($_POST['return_category'] ?? ''))),'catalog_page'=>max(1,absint($_POST['return_catalog_page'] ?? 1)),'momentec_view'=>$view,'asss_msg'=>$message],admin_url('admin.php')));exit;
         }
 
         if (!empty($_POST['asss_import_momentec_style'])) {
@@ -340,10 +347,13 @@ class ASSS_Admin {
             $search=sanitize_text_field(wp_unslash($_GET['q'] ?? ''));
             $brand=sanitize_text_field(wp_unslash($_GET['brand'] ?? ''));
             $category=sanitize_text_field(wp_unslash($_GET['category'] ?? ''));
+            $momentec_view=sanitize_key((string)($_GET['momentec_view'] ?? 'all'));
+            if(!in_array($momentec_view,['all','ready'],true))$momentec_view='all';
             $page_num=max(1,absint($_GET['catalog_page'] ?? 1));
             $facets=$this->momentec->catalog_facets();
-            $catalog=$this->momentec->catalog_search($search,$brand,$category,$page_num,50);
+            $catalog=$this->momentec->catalog_search($search,$brand,$category,$page_num,50,$momentec_view);
             $meta=$this->momentec->catalog_meta();
+            $ready_count=(int)($status['cached_styles'] ?? 0);
 
             echo '<div class="notice notice-success inline"><p><strong>Momentec production is connected through GitHub Actions.</strong> The full browse catalog comes from Momentec\'s official product-data feed; customer-specific cost/details are fetched securely through production v2 only after you select a style.</p></div>';
             echo '<p><strong>Browse catalog:</strong> '.number_format_i18n((int)($status['catalog_styles'] ?? 0)).' styles &nbsp; <strong>Customer-detail cache:</strong> '.number_format_i18n((int)($status['cached_styles'] ?? 0)).' styles / '.number_format_i18n((int)($status['cached_variants'] ?? 0)).' exact variations';
@@ -354,18 +364,23 @@ class ASSS_Admin {
                 $this->wrap_end();return;
             }
 
-            echo '<form method="get"><input type="hidden" name="page" value="asss-suppliers"><input type="hidden" name="supplier" value="momentec"><table class="form-table" style="max-width:1040px"><tr><th style="width:150px">Brand</th><td><select name="brand"><option value="">All brands</option>';
+            $all_url=add_query_arg(['page'=>'asss-suppliers','supplier'=>'momentec','momentec_view'=>'all'],admin_url('admin.php'));
+            $ready_url=add_query_arg(['page'=>'asss-suppliers','supplier'=>'momentec','momentec_view'=>'ready'],admin_url('admin.php'));
+            echo '<div style="display:flex;gap:8px;align-items:center;margin:18px 0 8px"><a class="button '.($momentec_view==='all'?'button-primary':'').'" href="'.esc_url($all_url).'">All Momentec Products</a><a class="button '.($momentec_view==='ready'?'button-primary':'').'" href="'.esc_url($ready_url).'">Ready to Import <span style="display:inline-block;margin-left:4px;padding:0 6px;border-radius:10px;background:'.($momentec_view==='ready'?'rgba(255,255,255,.22)':'#d7f0df').'">'.number_format_i18n($ready_count).'</span></a></div>';
+            if($momentec_view==='ready')echo '<p class="description" style="margin-top:0">These styles have completed the secure GitHub hydration step and can go straight to color review/import. Newly completed styles appear here automatically.</p>';
+            echo '<form method="get"><input type="hidden" name="page" value="asss-suppliers"><input type="hidden" name="supplier" value="momentec"><input type="hidden" name="momentec_view" value="'.esc_attr($momentec_view).'"><table class="form-table" style="max-width:1040px"><tr><th style="width:150px">Brand</th><td><select name="brand"><option value="">All brands</option>';
             foreach((array)($facets['brands'] ?? []) as $value)echo '<option '.selected($brand,$value,false).' value="'.esc_attr($value).'">'.esc_html($value).'</option>';
             echo '</select></td></tr><tr><th>Category</th><td><select name="category"><option value="">All categories</option>';
             foreach((array)($facets['categories'] ?? []) as $value)echo '<option '.selected($category,$value,false).' value="'.esc_attr($value).'">'.esc_html($value).'</option>';
             echo '</select></td></tr><tr><th>Search</th><td><input class="regular-text" name="q" value="'.esc_attr($search).'" placeholder="Style, product, brand, division, or category"> <button class="button button-primary">Browse Catalog</button></td></tr></table></form>';
 
-            echo '<p><strong>'.number_format_i18n((int)$catalog['total']).'</strong> matching styles. Every style now has its own <strong>Import</strong> action. If customer-specific details are not cached yet, clicking Import automatically queues that one style for secure GitHub hydration; once ready, Import opens the normal review/color-selection screen. You can still use the checkboxes for optional bulk preparation.</p>';
-            if(empty($catalog['rows'])){echo '<p><em>No Momentec catalog styles match these filters.</em></p>';$this->wrap_end();return;}
+            if($momentec_view==='ready') echo '<p><strong>'.number_format_i18n((int)$catalog['total']).'</strong> hydrated style'.((int)$catalog['total']===1?'':'s').' ready to import.</p>';
+            else echo '<p><strong>'.number_format_i18n((int)$catalog['total']).'</strong> matching styles. Every style now has its own <strong>Import</strong> action. If customer-specific details are not cached yet, clicking Import automatically queues that one style for secure GitHub hydration; once ready, it appears under <strong>Ready to Import</strong>. You can still use the checkboxes for optional bulk preparation.</p>';
+            if(empty($catalog['rows'])){echo $momentec_view==='ready'?'<p><em>No Momentec styles are ready yet. Queued styles will appear here after the GitHub detail worker completes.</em></p>':'<p><em>No Momentec catalog styles match these filters.</em></p>';$this->wrap_end();return;}
 
             echo '<style>.asss-momentec-table{width:100%;border-collapse:collapse}.asss-momentec-table th,.asss-momentec-table td{text-align:left;vertical-align:middle;padding:10px 12px;border-right:1px solid #e2e4e7;border-bottom:1px solid #e2e4e7}.asss-momentec-table th:last-child,.asss-momentec-table td:last-child{border-right:0}.asss-momentec-status{display:inline-block;padding:3px 7px;border-radius:999px;background:#f0f0f1;font-size:12px}.asss-momentec-status.ready{background:#d7f0df}.asss-momentec-status.pending{background:#fff3cd}.asss-momentec-status.failed{background:#f8d7da}</style>';
             echo '<form method="post">';wp_nonce_field('asss_momentec_catalog');
-            echo '<input type="hidden" name="return_q" value="'.esc_attr($search).'"><input type="hidden" name="return_brand" value="'.esc_attr($brand).'"><input type="hidden" name="return_category" value="'.esc_attr($category).'"><input type="hidden" name="return_catalog_page" value="'.(int)$catalog['page'].'">';
+            echo '<input type="hidden" name="return_q" value="'.esc_attr($search).'"><input type="hidden" name="return_brand" value="'.esc_attr($brand).'"><input type="hidden" name="return_category" value="'.esc_attr($category).'"><input type="hidden" name="return_catalog_page" value="'.(int)$catalog['page'].'"><input type="hidden" name="return_momentec_view" value="'.esc_attr($momentec_view).'">';
             echo '<div style="margin:12px 0"><button class="button" name="asss_momentec_queue_styles" value="1">Prepare Selected for Import</button> <span class="description">Optional bulk action. Each row also has its own Import button.</span></div>';
             echo '<table class="widefat striped asss-momentec-table"><thead><tr><th style="width:34px"><input type="checkbox" onclick="document.querySelectorAll(\'.asss-momentec-pick\').forEach(el=>el.checked=this.checked)"></th><th style="width:68px">Image</th><th>Product</th><th>Style</th><th>Brand</th><th>Category</th><th>Colors</th><th>Sizes</th><th>Exact SKUs</th><th>Status</th><th>Action</th></tr></thead><tbody>';
             foreach($catalog['rows'] as $row){
@@ -1228,7 +1243,7 @@ class ASSS_Admin {
         $inventory_receive_url = rest_url('asss/v1/bridge/inventory/sanmar');
         $ss_inventory_targets_url = rest_url('asss/v1/bridge/inventory/ss/targets');
         $ss_inventory_receive_url = rest_url('asss/v1/bridge/inventory/ss');
-        echo '<h2>GitHub Bridge (recommended)</h2><p>GitHub Actions connects to SanMar on port 2200, then securely pushes product and inventory data into this site. Your HostGator server does not need direct SFTP access.</p><table class="form-table">' . $this->check('Accept GitHub supplier updates', 'bridge_enabled', $s['bridge_enabled']) . $this->check('Accept GitHub inventory updates', 'bridge_inventory_enabled', $s['bridge_inventory_enabled']) . '<tr><th>SanMar Product Bridge URL</th><td><code style="user-select:all">' . esc_html($bridge_url) . '</code></td></tr><tr><th>S&amp;S Brand Bridge URL</th><td><code style="user-select:all">' . esc_html($ss_brands_url) . '</code></td></tr><tr><th>SanMar Inventory Target URL</th><td><code style="user-select:all">' . esc_html($inventory_targets_url) . '</code><p class="description">GitHub learns which exact SanMar variations this store currently sells.</p></td></tr><tr><th>SanMar Inventory Receive URL</th><td><code style="user-select:all">' . esc_html($inventory_receive_url) . '</code></td></tr><tr><th>S&amp;S Inventory Target URL</th><td><code style="user-select:all">' . esc_html($ss_inventory_targets_url) . '</code><p class="description">GitHub requests only exact active S&amp;S SKUs, keeping API usage and WordPress payloads small.</p></td></tr><tr><th>S&amp;S Inventory Receive URL</th><td><code style="user-select:all">' . esc_html($ss_inventory_receive_url) . '</code></td></tr><tr><th>Bridge Token</th><td><div style="display:flex;gap:8px;align-items:center;max-width:760px"><input id="asss-bridge-token" class="large-text code" type="password" readonly autocomplete="off" value="' . esc_attr($s['bridge_token']) . '"><button type="button" class="button" id="asss-toggle-token" onclick="var i=document.getElementById(&quot;asss-bridge-token&quot;);if(!i)return false;var show=i.getAttribute(&quot;type&quot;)===&quot;password&quot;;i.setAttribute(&quot;type&quot;,show?&quot;text&quot;:&quot;password&quot;);this.textContent=show?&quot;Hide&quot;:&quot;Show&quot;;return false;">Show</button></div><p class="description">Store this in GitHub as <code>ASSS_BRIDGE_TOKEN</code>. It is hidden by default on this screen.</p><button class="button" name="asss_regen_bridge" value="1" formnovalidate onclick="return confirm(\'Generate a new bridge token? The existing GitHub ASSS_BRIDGE_TOKEN secret will stop working until you update it.\');">Generate New Token</button></td></tr></table>';
+        echo '<h2>GitHub Bridge (recommended)</h2><p>GitHub Actions connects to SanMar on port 2200, then securely pushes product and inventory data into this site. Your HostGator server does not need direct SFTP access.</p><table class="form-table">' . $this->check('Accept GitHub supplier updates', 'bridge_enabled', $s['bridge_enabled']) . $this->check('Accept GitHub inventory updates', 'bridge_inventory_enabled', $s['bridge_inventory_enabled']) . '<tr><th>SanMar Product Bridge URL</th><td><code style="user-select:all">' . esc_html($bridge_url) . '</code></td></tr><tr><th>S&amp;S Brand Bridge URL</th><td><code style="user-select:all">' . esc_html($ss_brands_url) . '</code></td></tr><tr><th>SanMar Inventory Target URL</th><td><code style="user-select:all">' . esc_html($inventory_targets_url) . '</code><p class="description">GitHub learns which exact SanMar variations this store currently sells.</p></td></tr><tr><th>SanMar Inventory Receive URL</th><td><code style="user-select:all">' . esc_html($inventory_receive_url) . '</code></td></tr><tr><th>S&amp;S Inventory Target URL</th><td><code style="user-select:all">' . esc_html($ss_inventory_targets_url) . '</code><p class="description">GitHub requests only exact active S&amp;S SKUs, keeping API usage and WordPress payloads small.</p></td></tr><tr><th>S&amp;S Inventory Receive URL</th><td><code style="user-select:all">' . esc_html($ss_inventory_receive_url) . '</code></td></tr><tr><th>Bridge Token</th><td><div style="display:flex;gap:8px;align-items:center;max-width:760px"><input id="asss-bridge-token" class="large-text code" type="password" readonly autocomplete="off" value="' . esc_attr($s['bridge_token']) . '"><button type="button" class="button" id="asss-toggle-token" onclick="var i=document.getElementById(&quot;asss-bridge-token&quot;);if(!i)return false;var show=i.getAttribute(&quot;type&quot;)===&quot;password&quot;;i.setAttribute(&quot;type&quot;,show?&quot;text&quot;:&quot;password&quot;);this.textContent=show?&quot;Hide&quot;:&quot;Show&quot;;return false;">Show</button></div><p class="description">Store this in GitHub as <code>ASSS_BRIDGE_TOKEN</code>. It is hidden by default on this screen.</p></td></tr></table>';
 
 
         $latest_release = $this->updater->latest_release();
@@ -1294,7 +1309,14 @@ class ASSS_Admin {
         echo '<label>Width <input style="width:90px" type="number" min="0" step="0.01" name="fallback_width_in" value="' . esc_attr($s['fallback_width_in']) . '"></label>';
         echo '<label>Height <input style="width:90px" type="number" min="0" step="0.01" name="fallback_height_in" value="' . esc_attr($s['fallback_height_in']) . '"></label>';
         echo '</div><p class="description">SanMar\'s Brand CSV provides weight but not WooCommerce shipping length/width/height. Leave these blank unless you want a store-defined fallback for imported products. Existing product dimensions are never overwritten by fallback values.</p></td></tr>';
-        echo '</table><p><button class="button button-primary" name="asss_save_settings" value="1">Save Settings</button></p></form>';
+        echo '</table><p><button class="button button-primary" name="asss_save_settings" value="1">Save Settings</button></p>';
+        echo '<hr style="margin-top:38px"><div style="max-width:920px;border:1px solid #d63638;border-left-width:4px;background:#fff;padding:18px 20px;margin:18px 0 8px">';
+        echo '<h2 style="margin-top:0;color:#b32d2e">Danger Zone</h2><h3>Generate a New GitHub Bridge Token</h3>';
+        echo '<p><strong>This immediately invalidates the current bridge token.</strong> SanMar, S&amp;S, and Momentec GitHub workflows will stop talking to WordPress until the new value is copied into the <code>ASSS_BRIDGE_TOKEN</code> GitHub Actions Secret.</p>';
+        echo '<p><label><input type="checkbox" name="asss_regen_ack" value="1" id="asss-regen-ack"> I understand that generating a new token will interrupt supplier sync until GitHub Secrets is updated.</label></p>';
+        echo '<p><label for="asss-regen-confirm"><strong>Type <code>REGENERATE</code> to confirm:</strong></label><br><input id="asss-regen-confirm" class="regular-text code" name="asss_regen_confirm" value="" autocomplete="off"></p>';
+        echo '<p><button class="button" style="border-color:#b32d2e;color:#b32d2e" name="asss_regen_bridge" value="1" formnovalidate onclick="if(!document.getElementById(&quot;asss-regen-ack&quot;).checked||document.getElementById(&quot;asss-regen-confirm&quot;).value.trim().toUpperCase()!==&quot;REGENERATE&quot;){alert(&quot;Check the acknowledgement and type REGENERATE exactly before generating a new bridge token.&quot;);return false;}return confirm(&quot;Generate a new bridge token now? Supplier sync will pause until GitHub Secrets is updated.&quot;);">Generate New Bridge Token</button></p>';
+        echo '</div></form>';
         $this->wrap_end();
     }
 

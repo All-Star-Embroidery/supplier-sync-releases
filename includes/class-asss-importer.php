@@ -451,6 +451,7 @@ class ASSS_Importer {
         wc_delete_product_transients($product_id);
 
         do_action('asss_product_synced', $product_id, 'sanmar', ['brand'=>$brand, 'style'=>$style, 'mode'=>'import']);
+        if ($is_new) $this->set_new_product_alphabetical_defaults($product_id);
 
         ASSS_Logger::log("Imported/updated SanMar {$brand} {$style}", 'info', [
             'product_id' => $product_id,
@@ -2510,6 +2511,7 @@ class ASSS_Importer {
         WC_Product_Variable::sync($product_id);
         wc_delete_product_transients($product_id);
         do_action('asss_product_synced', $product_id, 'ss', ['brand_id'=>$brand_id,'brand'=>$brand,'style_id'=>$style_id,'style'=>$style,'mode'=>'import']);
+        if ($is_new) $this->set_new_product_alphabetical_defaults($product_id);
         ASSS_Logger::log('Imported/updated S&S product', 'info', [
             'product_id'=>$product_id,'brand_id'=>$brand_id,'brand'=>$brand,'style_id'=>$style_id,'style'=>$style,
             'selected_colors'=>count($selected_colors),'expected_variations'=>(int)($audit['expected'] ?? count($variants)),
@@ -3833,7 +3835,7 @@ class ASSS_Importer {
         $this->multi->register_product_source($product_id,'momentec',['brand'=>$brand,'style'=>$style,'selection_mode'=>$mode,'selected_colors'=>$selected_colors]);update_post_meta($product_id,'_asss_momentec_color_selection_mode',$mode);update_post_meta($product_id,'_asss_momentec_selected_colors',wp_json_encode($selected_colors));
         $this->sync_taxonomies($product_id,$brand,$categories,'',$is_new,'momentec');$common=$this->ss_common_rows($variants,$data);$this->set_attributes($product,$common);$this->sync_parent_shipping($product,$common);$this->sync_momentec_bulk_order_fields($product,$data,$variants,$is_new);$product->save();
         $audit=$this->reconcile_momentec_variations($product_id,$variants,true);if(!empty($this->sanmar->settings()['sync_images'])){$this->sync_momentec_parent_featured_image($product_id,$data,$variants);$this->queue_momentec_media_jobs($product_id,$variants);}$this->sync_managed_pricing_for_product($product_id);
-        $product=wc_get_product($product_id);if($product instanceof WC_Product_Variable){$product->update_meta_data('_asss_last_product_sync',current_time('mysql'));$product->save();}WC_Product_Variable::sync($product_id);wc_delete_product_transients($product_id);do_action('asss_product_synced',$product_id,'momentec',['brand'=>$brand,'style'=>$style,'mode'=>'import']);ASSS_Logger::log('Imported/updated Momentec product','info',['product_id'=>$product_id,'brand'=>$brand,'style'=>$style,'selected_colors'=>count($selected_colors),'expected_variations'=>(int)($audit['expected'] ?? count($variants))]);return $product_id;
+        $product=wc_get_product($product_id);if($product instanceof WC_Product_Variable){$product->update_meta_data('_asss_last_product_sync',current_time('mysql'));$product->save();}WC_Product_Variable::sync($product_id);wc_delete_product_transients($product_id);do_action('asss_product_synced',$product_id,'momentec',['brand'=>$brand,'style'=>$style,'mode'=>'import']);if($is_new)$this->set_new_product_alphabetical_defaults($product_id);ASSS_Logger::log('Imported/updated Momentec product','info',['product_id'=>$product_id,'brand'=>$brand,'style'=>$style,'selected_colors'=>count($selected_colors),'expected_variations'=>(int)($audit['expected'] ?? count($variants))]);return $product_id;
     }
 
     private function update_momentec_style(int $product_id){
@@ -3853,6 +3855,45 @@ class ASSS_Importer {
             if(!$vid)continue;$this->multi->register_variation_source($vid,'momentec',['sku'=>(string)($row['sku'] ?? ''),'sku_id'=>$supplier_id,'unique_key'=>$supplier_id,'color'=>$color,'size'=>$size,'cost'=>$row['customer_price'] ?? '','retail_price'=>$row['retail_price'] ?? '','inventory_qty'=>isset($row['qty'])&&is_numeric($row['qty'])?(int)$row['qty']:null,'availability'=>(string)($row['availability'] ?? ''),'availability_date'=>(string)($row['availability_date'] ?? ''),'gallery'=>(array)($row['gallery'] ?? [])]);$this->multi->recalculate_variation_inventory($vid);
         }
         $this->disable_missing_source_variations($product_id,'momentec',$expected);$this->rebuild_attributes_from_variations($product_id);if(!empty($this->sanmar->settings()['sync_images'])){$this->sync_momentec_parent_featured_image($product_id,$data,$variants);$this->queue_momentec_media_jobs($product_id,$variants);}$this->sync_managed_pricing_for_product($product_id);$this->multi->recalculate_product_inventory($product_id);update_post_meta($product_id,'_asss_last_product_sync',current_time('mysql'));do_action('asss_product_synced',$product_id,'momentec',['brand'=>$brand,'style'=>$style,'mode'=>'multi-link']);ASSS_Logger::log('Momentec linked as additional supplier','info',['product_id'=>$product_id,'matched_existing'=>$matched,'created_momentec_only'=>$created]);return $product_id;
+    }
+
+
+    /**
+     * Set a deterministic customer-facing default only for newly created supplier
+     * products. Sort real variations by displayed Color, then Size, then any
+     * remaining attributes; choosing an actual child guarantees the defaults are
+     * a sellable combination rather than an impossible Cartesian pairing.
+     */
+    private function set_new_product_alphabetical_defaults(int $product_id): void {
+        $product = wc_get_product($product_id);
+        if (!$product instanceof WC_Product_Variable) return;
+        $candidates = [];
+        foreach ($this->variation_ids_direct($product_id) as $variation_id) {
+            $variation = wc_get_product($variation_id);
+            if (!$variation instanceof WC_Product_Variation || $variation->get_status() === 'trash') continue;
+            $attrs = array_filter((array)$variation->get_attributes(), static fn($v) => trim((string)$v) !== '');
+            if (!$attrs) continue;
+            $ordered_keys = [];
+            foreach (['pa_color','color','pa_size','size'] as $preferred) if (array_key_exists($preferred,$attrs)) $ordered_keys[]=$preferred;
+            $rest = array_values(array_diff(array_keys($attrs),$ordered_keys)); sort($rest,SORT_NATURAL|SORT_FLAG_CASE); $ordered_keys=array_merge($ordered_keys,$rest);
+            $labels = [];
+            foreach ($ordered_keys as $key) {
+                $value=(string)$attrs[$key]; $label=$value;
+                if (taxonomy_exists($key)) { $term=get_term_by('slug',$value,$key); if ($term && !is_wp_error($term)) $label=(string)$term->name; }
+                $labels[] = mb_strtolower(wp_strip_all_tags(rawurldecode($label)));
+            }
+            $candidates[]=['id'=>(int)$variation_id,'attrs'=>$attrs,'labels'=>$labels];
+        }
+        if (!$candidates) return;
+        usort($candidates, static function($a,$b){
+            $max=max(count($a['labels']),count($b['labels']));
+            for($i=0;$i<$max;$i++){ $cmp=strnatcasecmp((string)($a['labels'][$i]??''),(string)($b['labels'][$i]??'')); if($cmp!==0)return $cmp; }
+            return (int)$a['id'] <=> (int)$b['id'];
+        });
+        $defaults=[]; foreach((array)$candidates[0]['attrs'] as $key=>$value) if(trim((string)$value)!=='')$defaults[$key]=(string)$value;
+        if(!$defaults)return;
+        $product->set_default_attributes($defaults); $product->save();
+        ASSS_Logger::log('Set alphabetical default variation for new import','info',['product_id'=>$product_id,'variation_id'=>(int)$candidates[0]['id'],'defaults'=>$defaults]);
     }
 
     private function hide_discontinued_product(WC_Product $product, string $status): void {
