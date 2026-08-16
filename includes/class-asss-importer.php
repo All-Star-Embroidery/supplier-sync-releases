@@ -2607,9 +2607,10 @@ class ASSS_Importer {
             $row = $expected[$key];
             if ($v->get_regular_price('edit') === '' || $v->get_price('edit') === '') $missing_price++;
             if ($v->get_sku('edit') === '') $missing_sku++;
-            if (!empty($this->sanmar->settings()['sync_images']) && !empty($row['gallery'])) {
-                if (!$v->get_image_id()) $missing_image++;
-                $expected_gallery = count(array_unique(array_filter((array)$row['gallery'])));
+            if (!empty($this->sanmar->settings()['sync_images'])) {
+                $classified_media = $this->ss_classify_variant_media($row);
+                $expected_gallery = count($classified_media['storefront']);
+                if ($expected_gallery > 0 && !$v->get_image_id()) $missing_image++;
                 $saved_gallery = $v->get_meta('_asss_variation_gallery_ids');
                 if (is_string($saved_gallery)) {
                     $decoded = json_decode($saved_gallery, true);
@@ -2650,20 +2651,100 @@ class ASSS_Importer {
         return in_array((string)get_post_meta($attachment_id, '_asss_image_source', true), ['sanmar','ss','momentec','supplier'], true);
     }
 
-    private function sync_ss_variation_media(int $variation_id, array $row): void {
-        $urls = [];
-        foreach ((array)($row['gallery'] ?? []) as $raw) {
+    private function ss_media_kind(string $value): string {
+        return strtolower((string)preg_replace('/[^a-z0-9]+/i', '', trim($value)));
+    }
+
+    /**
+     * Split S&S media into customer-facing product photography and supplier-only
+     * reference media. Unknown asset types are deliberately reference-only so a
+     * color chart/swatch board can never leak into the WooCommerce gallery.
+     */
+    private function ss_classify_variant_media(array $row): array {
+        $storefront = [];
+        $reference = [];
+        $allowed = array_fill_keys([
+            'front','directside','side','back',
+            'onmodelfront','onmodelside','onmodelback',
+        ], true);
+
+        // Named S&S product-photo fields are trusted storefront media.
+        $images = is_array($row['images'] ?? null) ? $row['images'] : [];
+        foreach ([
+            'front'=>'front','direct_side'=>'directside','side'=>'side','back'=>'back',
+            'on_model_front'=>'onmodelfront','on_model_side'=>'onmodelside','on_model_back'=>'onmodelback',
+        ] as $key=>$kind) {
+            $url = $this->normalize_ss_media_url((string)($images[$key] ?? ''));
+            if ($url !== '' && isset($allowed[$kind])) $storefront[$url] = true;
+        }
+
+        $gallery = is_array($row['gallery'] ?? null) ? array_values($row['gallery']) : [];
+        $types = is_array($row['gallery_types'] ?? null) ? array_values($row['gallery_types']) : [];
+        foreach ($gallery as $i=>$raw) {
             $url = $this->normalize_ss_media_url((string)$raw);
-            if ($url !== '') $urls[$url] = true;
+            if ($url === '') continue;
+            $kind = $this->ss_media_kind((string)($types[$i] ?? ''));
+            if ($kind !== '' && isset($allowed[$kind])) $storefront[$url] = true;
+            else $reference[$url] = true;
         }
-        $urls = array_keys($urls);
-        if (!$urls && !empty($row['primary_image'])) {
-            $url = $this->normalize_ss_media_url((string)$row['primary_image']);
-            if ($url !== '') $urls[] = $url;
+
+        // Future GitHub normalizers may provide an explicit reference bucket.
+        foreach ((array)($row['reference_media'] ?? []) as $raw) {
+            $url = $this->normalize_ss_media_url((string)$raw);
+            if ($url !== '') $reference[$url] = true;
         }
-        if (!$urls) return;
+
+        // A primary image is only safe if it was independently identified as a
+        // known product photo. Otherwise retain it as supplier reference media.
+        $primary = $this->normalize_ss_media_url((string)($row['primary_image'] ?? ''));
+        if ($primary !== '' && !isset($storefront[$primary])) $reference[$primary] = true;
+
+        foreach (array_keys($storefront) as $url) unset($reference[$url]);
+        return ['storefront'=>array_keys($storefront), 'reference'=>array_keys($reference)];
+    }
+
+    private function save_ss_reference_media(int $post_id, array $urls): void {
+        $clean = [];
+        foreach ($urls as $raw) {
+            $url = $this->normalize_ss_media_url((string)$raw);
+            if ($url !== '') $clean[$url] = true;
+        }
+        if ($clean) update_post_meta($post_id, '_asss_ss_reference_media_urls', wp_json_encode(array_keys($clean)));
+        else delete_post_meta($post_id, '_asss_ss_reference_media_urls');
+    }
+
+    private function sync_ss_variation_media(int $variation_id, array $row): void {
         $v = wc_get_product($variation_id);
         if (!$v instanceof WC_Product_Variation) return;
+
+        $classified = $this->ss_classify_variant_media($row);
+        $urls = array_values((array)$classified['storefront']);
+        $this->save_ss_reference_media($variation_id, (array)$classified['reference']);
+
+        $current_primary = (int)$v->get_image_id();
+        $manual_primary = $current_primary && !$this->is_supplier_attachment($current_primary);
+        $manual_gallery = [];
+        if (method_exists($v, 'get_gallery_image_ids')) {
+            foreach ((array)$v->get_gallery_image_ids() as $id) {
+                $id = (int)$id;
+                if ($id && !$this->is_supplier_attachment($id)) $manual_gallery[] = $id;
+            }
+        }
+
+        // No verified storefront photo: remove Supplier Sync-owned media from the
+        // variation instead of leaving a color board/chart visible to customers.
+        if (!$urls) {
+            if (!$manual_primary) $v->set_image_id(0);
+            if (method_exists($v, 'set_gallery_image_ids')) $v->set_gallery_image_ids(array_values(array_unique($manual_gallery)));
+            $full = $manual_primary ? array_values(array_unique(array_merge([$current_primary], $manual_gallery))) : array_values(array_unique($manual_gallery));
+            $v->update_meta_data('_asss_variation_gallery_ids', $full);
+            $v->update_meta_data('_asss_variation_gallery_urls', []);
+            $v->update_meta_data('_asss_variation_gallery_supplier_count', 0);
+            $v->delete_meta_data('_asss_resolved_variation_image_url');
+            $v->save();
+            return;
+        }
+
         $supplier_ids = [];
         foreach ($urls as $url) {
             $aid = $this->sideload($url, $variation_id, 'ss');
@@ -2671,17 +2752,16 @@ class ASSS_Importer {
         }
         $supplier_ids = array_values(array_unique(array_filter($supplier_ids)));
         if (!$supplier_ids) return;
-        $current_primary = (int)$v->get_image_id();
-        $manual_primary = $current_primary && !$this->is_supplier_attachment($current_primary);
+
         if (!$manual_primary) $v->set_image_id($supplier_ids[0]);
-        $manual_gallery = [];
-        if (method_exists($v, 'get_gallery_image_ids')) {
-            foreach ((array)$v->get_gallery_image_ids() as $id) if ((int)$id && !$this->is_supplier_attachment((int)$id)) $manual_gallery[] = (int)$id;
-        }
         $primary_id = $manual_primary ? $current_primary : $supplier_ids[0];
         $supplier_extra = array_values(array_filter($supplier_ids, static fn($id) => (int)$id !== (int)$primary_id));
-        if (method_exists($v, 'set_gallery_image_ids')) $v->set_gallery_image_ids(array_values(array_unique(array_merge($supplier_extra, $manual_gallery))));
-        $full = $manual_primary ? array_values(array_unique(array_merge([$current_primary], $supplier_ids, $manual_gallery))) : array_values(array_unique(array_merge($supplier_ids, $manual_gallery)));
+        if (method_exists($v, 'set_gallery_image_ids')) {
+            $v->set_gallery_image_ids(array_values(array_unique(array_merge($supplier_extra, $manual_gallery))));
+        }
+        $full = $manual_primary
+            ? array_values(array_unique(array_merge([$current_primary], $supplier_ids, $manual_gallery)))
+            : array_values(array_unique(array_merge($supplier_ids, $manual_gallery)));
         $v->update_meta_data('_asss_variation_gallery_ids', $full);
         $v->update_meta_data('_asss_variation_gallery_urls', $urls);
         $v->update_meta_data('_asss_variation_gallery_supplier_count', count($supplier_ids));
@@ -2712,7 +2792,7 @@ class ASSS_Importer {
         // and lifestyle photography stays available in galleries but is excluded here.
         $gallery=is_array($row['gallery'] ?? null)?array_values($row['gallery']):[];
         $types=is_array($row['gallery_types'] ?? null)?array_values($row['gallery_types']):[];
-        $allowed=['front','style','directside','side','back'];
+        $allowed=['front','directside','side','back'];
         foreach($gallery as $i=>$raw){
             $kind=strtolower((string)preg_replace('/[^a-z0-9]+/i','',(string)($types[$i] ?? '')));
             if(!in_array($kind,$allowed,true))continue;
@@ -2741,35 +2821,28 @@ class ASSS_Importer {
             return $cmp!==0?$cmp:(((int)$a['index'])<=>((int)$b['index']));
         });
 
-        // 1) Clean FRONT shot in a familiar neutral storefront color.
+        // Prefer a clean FRONT shot in a familiar neutral storefront color.
         foreach($ranked as $entry){
             if((int)$entry['rank']>=10000)continue;
             $url=$this->ss_clean_variant_image_url((array)$entry['row'],true);
             if($url!=='')return $url;
         }
-        // 2) Any clean FRONT shot from the selected supplier colors.
+        // Then any clean FRONT shot from the selected supplier colors.
         foreach($ranked as $entry){
             $url=$this->ss_clean_variant_image_url((array)$entry['row'],true);
             if($url!=='')return $url;
         }
-        // 3) S&S style-level thumbnail.
-        $thumbnail=$this->normalize_ss_media_url((string)($data['images']['thumbnail'] ?? ''));
-        if($thumbnail!=='')return $thumbnail;
-        // 4) A clean non-model product angle in a preferred neutral color.
+        // Then a clean non-model product angle. Style-level generic images are
+        // intentionally excluded because S&S sometimes uses a full color board.
         foreach($ranked as $entry){
             if((int)$entry['rank']>=10000)continue;
             $url=$this->ss_clean_variant_image_url((array)$entry['row'],false);
             if($url!=='')return $url;
         }
-        // 5) Any clean non-model product angle.
         foreach($ranked as $entry){
             $url=$this->ss_clean_variant_image_url((array)$entry['row'],false);
             if($url!=='')return $url;
         }
-        // 6) Generic style/product image only after clean product photography.
-        $product=$this->normalize_ss_media_url((string)($data['images']['product'] ?? ''));
-        if($product!=='')return $product;
-        // 7) No on-model/lifestyle fallback. Leave it for the merchant to choose.
         return '';
     }
 
@@ -2777,45 +2850,68 @@ class ASSS_Importer {
         $product = wc_get_product($product_id);
         if (!$product) return;
 
-        $current=(int)$product->get_image_id();
-        $manual_featured=$current && !$this->is_supplier_attachment($current);
-        $featured_id=$current;
-        $featured_url='';
-        if(!$manual_featured){
-            $featured_url=$this->ss_parent_featured_url($data,$variants);
-            if($featured_url!==''){
-                $candidate=$this->sideload($featured_url,$product_id,'ss');
-                if($candidate){$featured_id=(int)$candidate;$product->set_image_id($featured_id);}
+        $storefront = [];
+        $reference = [];
+        foreach ([(string)($data['images']['thumbnail'] ?? ''),(string)($data['images']['product'] ?? '')] as $raw) {
+            $url = $this->normalize_ss_media_url($raw);
+            if ($url !== '') $reference[$url] = true;
+        }
+        foreach ((array)($data['reference_media'] ?? []) as $raw) {
+            $url = $this->normalize_ss_media_url((string)$raw);
+            if ($url !== '') $reference[$url] = true;
+        }
+        foreach ($variants as $row) {
+            if (!is_array($row)) continue;
+            $classified = $this->ss_classify_variant_media($row);
+            foreach ((array)$classified['storefront'] as $url) $storefront[$url] = true;
+            foreach ((array)$classified['reference'] as $url) $reference[$url] = true;
+        }
+        foreach (array_keys($storefront) as $url) unset($reference[$url]);
+        $this->save_ss_reference_media($product_id, array_keys($reference));
+
+        $current = (int)$product->get_image_id();
+        $manual_featured = $current && !$this->is_supplier_attachment($current);
+        $featured_id = $current;
+        $featured_url = '';
+        if (!$manual_featured) {
+            $featured_url = $this->ss_parent_featured_url($data, $variants);
+            if ($featured_url !== '') {
+                $candidate = $this->sideload($featured_url, $product_id, 'ss');
+                if ($candidate) {
+                    $featured_id = (int)$candidate;
+                    $product->set_image_id($featured_id);
+                }
+            } else {
+                // Existing Supplier Sync-owned color board/reference image must
+                // disappear even when S&S has no clean product photo to replace it.
+                $product->set_image_id(0);
+                $featured_id = 0;
             }
         }
 
-        // Build a useful parent gallery independently from the featured-image rule.
-        // Lifestyle/model media may appear here, but can never become featured.
-        $urls=[];
-        foreach([(string)($data['images']['thumbnail'] ?? ''),(string)($data['images']['product'] ?? '')] as $raw){
-            $url=$this->normalize_ss_media_url($raw);if($url!=='')$urls[$url]=true;
-        }
-        foreach($variants as $row){
-            if(!is_array($row))continue;
-            $clean=$this->ss_clean_variant_image_url($row,false);if($clean!=='')$urls[$clean]=true;
-            foreach((array)($row['gallery'] ?? []) as $raw){
-                $url=$this->normalize_ss_media_url((string)$raw);if($url!=='')$urls[$url]=true;
+        $ids = [];
+        foreach (array_slice(array_keys($storefront), 0, 12) as $url) {
+            if ($featured_url !== '' && hash_equals($featured_url, $url) && $featured_id) {
+                $ids[] = $featured_id;
+                continue;
             }
-            if(count($urls)>=12)break;
+            $id = $this->sideload($url, $product_id, 'ss');
+            if ($id) $ids[] = (int)$id;
         }
-        $ids=[];
-        foreach(array_slice(array_keys($urls),0,12) as $url){
-            if($featured_url!=='' && hash_equals($featured_url,$url) && $featured_id){$ids[]=$featured_id;continue;}
-            $id=$this->sideload($url,$product_id,'ss');if($id)$ids[]=(int)$id;
+        $ids = array_values(array_unique(array_filter($ids)));
+
+        $manual_gallery = [];
+        foreach ($product->get_gallery_image_ids() as $id) {
+            $id = (int)$id;
+            if ($id && !$this->is_supplier_attachment($id)) $manual_gallery[] = $id;
         }
-        $ids=array_values(array_unique(array_filter($ids)));
-        $manual_gallery=[];
-        foreach($product->get_gallery_image_ids() as $id)if((int)$id&&!$this->is_supplier_attachment((int)$id))$manual_gallery[]=(int)$id;
-        $primary=(int)$product->get_image_id();
-        $supplier_gallery=array_values(array_filter($ids,static fn($id)=>(int)$id!==$primary));
-        $product->set_gallery_image_ids(array_values(array_unique(array_merge($supplier_gallery,$manual_gallery))));
+        $primary = (int)$product->get_image_id();
+        $supplier_gallery = array_values(array_filter($ids, static fn($id) => (int)$id !== $primary));
+        $product->set_gallery_image_ids(array_values(array_unique(array_merge($supplier_gallery, $manual_gallery))));
         $product->save();
-        if(!$manual_featured && $featured_url!=='')update_post_meta($product_id,'_asss_ss_featured_image_url',esc_url_raw($featured_url));
+
+        if (!$manual_featured && $featured_url !== '') update_post_meta($product_id, '_asss_ss_featured_image_url', esc_url_raw($featured_url));
+        elseif (!$manual_featured) delete_post_meta($product_id, '_asss_ss_featured_image_url');
     }
 
     private function sync_ss_bulk_order_fields(WC_Product_Variable $product, array $data, array $variants, bool $is_new): void {
@@ -2937,7 +3033,7 @@ class ASSS_Importer {
                     $existing_v->set_weight($this->weight_for_store((float)$row['weight_lb']));
                     $existing_v->save();
                 }
-                if(!empty($this->sanmar->settings()['sync_images']) && $existing_v instanceof WC_Product_Variation && !$existing_v->get_image_id()) $this->sync_ss_variation_media($vid,$row);
+                if(!empty($this->sanmar->settings()['sync_images']) && $existing_v instanceof WC_Product_Variation) $this->sync_ss_variation_media($vid,$row);
             }
             $this->multi->register_variation_source($vid,'ss',[
                 'sku'=>(string)($row['sku'] ?? ''),'sku_id'=>(string)($row['supplier_sku_id'] ?? $row['unique_key'] ?? ''),

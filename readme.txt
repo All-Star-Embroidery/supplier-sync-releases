@@ -4,7 +4,7 @@ Tags: woocommerce, supplier, inventory, sanmar, ssactivewear, github-actions
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 2.0.15
+Stable tag: 2.0.16
 License: Proprietary
 
 Curated multi-supplier-to-WooCommerce synchronization for All Star. SanMar and S&S Activewear connectors included.
@@ -40,6 +40,14 @@ Core V2 behavior:
 6. Use Suppliers -> Add Products to import new styles or explicitly link a second supplier to an existing Brand + Style product.
 
 == Changelog ==
+
+= 2.0.16 =
+* S&S full-color boards, swatch sheets, generic style images, and unknown media asset types are excluded from customer-facing product and variation galleries.
+* Only verified product photography (front, side, back, direct-side, and on-model angles) can enter S&S storefront galleries.
+* Supplier reference graphics are retained separately in Supplier Sync metadata instead of being discarded or displayed to customers.
+* S&S featured images no longer fall back to generic style-level imagery that may contain a full color panel.
+* Quick Repair now removes stale Supplier Sync-owned S&S reference graphics from existing product/variation galleries while preserving merchant-added images.
+* S&S variation-gallery audits now evaluate only verified storefront media, avoiding false missing-gallery warnings from reference graphics.
 
 = 2.0.15 =
 * Unified WooCommerce product-category import logic across SanMar, S&S Activewear, and Momentec.
