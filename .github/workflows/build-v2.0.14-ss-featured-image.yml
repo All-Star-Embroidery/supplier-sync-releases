@@ -1,3 +1,4 @@
+# retry: literal patch helper
 name: Build Supplier Sync v2.0.14
 
 on:
