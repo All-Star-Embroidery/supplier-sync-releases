@@ -14,219 +14,54 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout exact v2.0.13 source
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           ref: recovery/v2.0.13-exact-source
           fetch-depth: 0
           path: source
 
-      - name: Checkout release repository
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           ref: main
           fetch-depth: 0
           path: release
 
-      - name: Patch S&S featured-image ranking
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          root = Path('source')
-          main = root / 'all-star-supplier-sync.php'
-          text = main.read_text(encoding='utf-8')
-          text = text.replace('Version: 2.0.13', 'Version: 2.0.14', 1)
-          text = text.replace("define('ASSS_VERSION', '2.0.13');", "define('ASSS_VERSION', '2.0.14');", 1)
-          main.write_text(text, encoding='utf-8')
-
-          imp = root / 'includes/class-asss-importer.php'
-          text = imp.read_text(encoding='utf-8')
-          pattern = re.compile(
-              r"    private function sync_ss_parent_media\(int \$product_id, array \$data, array \$variants\): void \{.*?\n    \}\n\n    private function sync_ss_bulk_order_fields",
-              re.S,
-          )
-          replacement = r'''    private function ss_featured_color_rank(string $color,int $index): int {
-        $normalized=strtolower(trim((string)preg_replace('/[^a-z0-9]+/i',' ',$color)));
-        $tokens=array_values(array_filter(preg_split('/\s+/', $normalized) ?: []));
-        $rank=10000+$index;
-        $priority=['black'=>0,'navy'=>100,'charcoal'=>200,'graphite'=>250,'gray'=>300,'grey'=>300,'white'=>400];
-        foreach($priority as $token=>$score){
-            if(in_array($token,$tokens,true))return $score+$index;
-        }
-        return $rank;
-    }
-
-    /** Return a known clean, non-model S&S product image for one exact variant. */
-    private function ss_clean_variant_image_url(array $row,bool $front_only=false): string {
-        $images=is_array($row['images'] ?? null)?$row['images']:[];
-        $front=$this->normalize_ss_media_url((string)($images['front'] ?? ''));
-        if($front!=='')return $front;
-        if($front_only)return '';
-
-        // The GitHub S&S normalizer preserves media type beside each gallery URL.
-        // Only catalog/product angles may become a parent featured image. Model
-        // and lifestyle photography stays available in galleries but is excluded here.
-        $gallery=is_array($row['gallery'] ?? null)?array_values($row['gallery']):[];
-        $types=is_array($row['gallery_types'] ?? null)?array_values($row['gallery_types']):[];
-        $allowed=['front','style','directside','side','back'];
-        foreach($gallery as $i=>$raw){
-            $kind=strtolower((string)preg_replace('/[^a-z0-9]+/i','',(string)($types[$i] ?? '')));
-            if(!in_array($kind,$allowed,true))continue;
-            $url=$this->normalize_ss_media_url((string)$raw);
-            if($url!=='')return $url;
-        }
-
-        // Explicit named non-model angles remain safe fallbacks for older caches.
-        foreach(['direct_side','side','back'] as $key){
-            $url=$this->normalize_ss_media_url((string)($images[$key] ?? ''));
-            if($url!=='')return $url;
-        }
-        return '';
-    }
-
-    /** Pick the S&S image customers see first in shop/category/search results. */
-    private function ss_parent_featured_url(array $data,array $variants): string {
-        $ranked=[];
-        foreach(array_values($variants) as $index=>$row){
-            if(!is_array($row))continue;
-            $color=trim((string)($row['color'] ?? $row['catalog_color'] ?? ''));
-            $ranked[]=['rank'=>$this->ss_featured_color_rank($color,(int)$index),'index'=>(int)$index,'row'=>$row];
-        }
-        usort($ranked,static function($a,$b){
-            $cmp=((int)$a['rank'])<=>((int)$b['rank']);
-            return $cmp!==0?$cmp:(((int)$a['index'])<=>((int)$b['index']));
-        });
-
-        // 1) Clean FRONT shot in a familiar neutral storefront color.
-        foreach($ranked as $entry){
-            if((int)$entry['rank']>=10000)continue;
-            $url=$this->ss_clean_variant_image_url((array)$entry['row'],true);
-            if($url!=='')return $url;
-        }
-        // 2) Any clean FRONT shot from the selected supplier colors.
-        foreach($ranked as $entry){
-            $url=$this->ss_clean_variant_image_url((array)$entry['row'],true);
-            if($url!=='')return $url;
-        }
-        // 3) S&S style-level thumbnail.
-        $thumbnail=$this->normalize_ss_media_url((string)($data['images']['thumbnail'] ?? ''));
-        if($thumbnail!=='')return $thumbnail;
-        // 4) A clean non-model product angle in a preferred neutral color.
-        foreach($ranked as $entry){
-            if((int)$entry['rank']>=10000)continue;
-            $url=$this->ss_clean_variant_image_url((array)$entry['row'],false);
-            if($url!=='')return $url;
-        }
-        // 5) Any clean non-model product angle.
-        foreach($ranked as $entry){
-            $url=$this->ss_clean_variant_image_url((array)$entry['row'],false);
-            if($url!=='')return $url;
-        }
-        // 6) Generic style/product image only after clean product photography.
-        $product=$this->normalize_ss_media_url((string)($data['images']['product'] ?? ''));
-        if($product!=='')return $product;
-        // 7) No on-model/lifestyle fallback. Leave it for the merchant to choose.
-        return '';
-    }
-
-    private function sync_ss_parent_media(int $product_id, array $data, array $variants): void {
-        $product = wc_get_product($product_id);
-        if (!$product) return;
-
-        $current=(int)$product->get_image_id();
-        $manual_featured=$current && !$this->is_supplier_attachment($current);
-        $featured_id=$current;
-        $featured_url='';
-        if(!$manual_featured){
-            $featured_url=$this->ss_parent_featured_url($data,$variants);
-            if($featured_url!==''){
-                $candidate=$this->sideload($featured_url,$product_id,'ss');
-                if($candidate){$featured_id=(int)$candidate;$product->set_image_id($featured_id);}
-            }
-        }
-
-        // Build a useful parent gallery independently from the featured-image rule.
-        // Lifestyle/model media may appear here, but can never become featured.
-        $urls=[];
-        foreach([(string)($data['images']['thumbnail'] ?? ''),(string)($data['images']['product'] ?? '')] as $raw){
-            $url=$this->normalize_ss_media_url($raw);if($url!=='')$urls[$url]=true;
-        }
-        foreach($variants as $row){
-            if(!is_array($row))continue;
-            $clean=$this->ss_clean_variant_image_url($row,false);if($clean!=='')$urls[$clean]=true;
-            foreach((array)($row['gallery'] ?? []) as $raw){
-                $url=$this->normalize_ss_media_url((string)$raw);if($url!=='')$urls[$url]=true;
-            }
-            if(count($urls)>=12)break;
-        }
-        $ids=[];
-        foreach(array_slice(array_keys($urls),0,12) as $url){
-            if($featured_url!=='' && hash_equals($featured_url,$url) && $featured_id){$ids[]=$featured_id;continue;}
-            $id=$this->sideload($url,$product_id,'ss');if($id)$ids[]=(int)$id;
-        }
-        $ids=array_values(array_unique(array_filter($ids)));
-        $manual_gallery=[];
-        foreach($product->get_gallery_image_ids() as $id)if((int)$id&&!$this->is_supplier_attachment((int)$id))$manual_gallery[]=(int)$id;
-        $primary=(int)$product->get_image_id();
-        $supplier_gallery=array_values(array_filter($ids,static fn($id)=>(int)$id!==$primary));
-        $product->set_gallery_image_ids(array_values(array_unique(array_merge($supplier_gallery,$manual_gallery))));
-        $product->save();
-        if(!$manual_featured && $featured_url!=='')update_post_meta($product_id,'_asss_ss_featured_image_url',esc_url_raw($featured_url));
-    }
-
-    private function sync_ss_bulk_order_fields'''
-          text, count = pattern.subn(replacement, text, count=1)
-          if count != 1:
-              raise SystemExit('Could not patch S&S parent media block')
-          imp.write_text(text, encoding='utf-8')
-          PY
+      - name: Patch source
+        run: python3 release/.release-tools/v2014_patch.py source
 
       - name: Validate source
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
           find source -type f -name '*.php' -print0 | xargs -0 -n1 php -l
           grep -q 'Version: 2.0.14' source/all-star-supplier-sync.php
           grep -q "define('ASSS_VERSION', '2.0.14')" source/all-star-supplier-sync.php
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('source/includes/class-asss-importer.php').read_text()
-          assert 'private function ss_parent_featured_url' in p
-          assert "'black'=>0" in p and "'navy'=>100" in p and "'charcoal'=>200" in p
-          assert "'gray'=>300" in p and "'grey'=>300" in p and "'white'=>400" in p
-          assert "images['front']" in p
-          assert "gallery_types" in p
-          assert "No on-model/lifestyle fallback" in p
-          assert "$featured_url=$this->ss_parent_featured_url($data,$variants);" in p
-          block=p[p.index('private function sync_ss_parent_media'):p.index('private function sync_ss_bulk_order_fields')]
-          assert 'set_image_id($ids[0])' not in block
-          assert '$manual_featured' in block
-          print('SS_STOREFRONT_IMAGE_RANKING=PASS')
-          PY
+          grep -q 'private function ss_parent_featured_url' source/includes/class-asss-importer.php
+          grep -q "'black'=>0" source/includes/class-asss-importer.php
+          grep -q "'navy'=>100" source/includes/class-asss-importer.php
+          grep -q "'charcoal'=>200" source/includes/class-asss-importer.php
+          grep -q "gallery_types" source/includes/class-asss-importer.php
+          grep -q 'No on-model/lifestyle fallback' source/includes/class-asss-importer.php
           ! grep -R -q 'MOMENTEC_USERNAME\|MOMENTEC_PASSWORD' source
 
-      - name: Save exact v2.0.14 source
+      - name: Save exact source
         working-directory: source
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add all-star-supplier-sync.php includes/class-asss-importer.php
           git commit -m 'Release source: All Star Supplier Sync v2.0.14'
           git push origin HEAD:recovery/v2.0.14-exact-source
 
-      - name: Build and publish v2.0.14
+      - name: Build and publish package
         working-directory: release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git pull --ff-only origin main
@@ -236,26 +71,9 @@ jobs:
           (cd ../package && zip -qr ../release/all-star-supplier-sync-2.0.14.zip all-star-supplier-sync)
           unzip -t all-star-supplier-sync-2.0.14.zip >/dev/null
           unzip -p all-star-supplier-sync-2.0.14.zip all-star-supplier-sync/all-star-supplier-sync.php | grep -q 'Version: 2.0.14'
-          SHA="$(sha256sum all-star-supplier-sync-2.0.14.zip | awk '{print $1}')"
-          cat > latest.json <<'JSON'
-          {
-            "version": "2.0.14",
-            "package": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/v2.0.14/all-star-supplier-sync-2.0.14.zip",
-            "url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/tag/v2.0.14",
-            "name": "All Star Supplier Sync v2.0.14"
-          }
-          JSON
-          cat > RELEASE-2.0.14.md <<'MD'
-          # All Star Supplier Sync v2.0.14
-
-          S&S storefront featured-image ranking improvements.
-
-          - Preserves any merchant-selected WooCommerce featured image.
-          - Prefers clean front-facing product photography in neutral colors: Black, Navy, Charcoal, Graphite, Gray/Grey, then White.
-          - Falls back to any clean front product shot, then the S&S style thumbnail, then other non-model product angles, and finally the generic S&S product image.
-          - On-model and lifestyle photography can remain in galleries but is never automatically selected as the parent featured image.
-          - Existing Supplier Sync-managed S&S featured images are re-evaluated on import/refresh/Quick Repair.
-          MD
+          SHA=$(sha256sum all-star-supplier-sync-2.0.14.zip | awk '{print $1}')
+          printf '%s\n' '{' '  "version": "2.0.14",' '  "package": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/v2.0.14/all-star-supplier-sync-2.0.14.zip",' '  "url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/tag/v2.0.14",' '  "name": "All Star Supplier Sync v2.0.14"' '}' > latest.json
+          printf '%s\n' '# All Star Supplier Sync v2.0.14' '' 'S&S storefront featured-image ranking improvements.' '' '- Preserves merchant-selected featured images.' '- Prefers clean front product photography in Black, Navy, Charcoal, Graphite, Gray/Grey, then White.' '- Falls back to any clean front shot, then the S&S style thumbnail, other non-model product angles, and finally the generic product image.' '- On-model/lifestyle photography remains gallery-only and is never automatically featured.' '- Existing Supplier Sync-managed S&S images are re-evaluated on import/refresh/Quick Repair.' > RELEASE-2.0.14.md
           git add all-star-supplier-sync-2.0.14.zip latest.json RELEASE-2.0.14.md
           git commit -m 'release: All Star Supplier Sync v2.0.14'
           git push origin main
@@ -265,4 +83,4 @@ jobs:
           else
             gh release create v2.0.14 all-star-supplier-sync-2.0.14.zip --target main --title 'All Star Supplier Sync v2.0.14' --notes-file RELEASE-2.0.14.md
           fi
-          echo "RELEASE_SHA256=$SHA"
+          echo RELEASE_SHA256=$SHA
