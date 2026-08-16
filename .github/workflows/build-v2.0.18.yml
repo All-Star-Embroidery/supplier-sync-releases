@@ -1,0 +1,117 @@
+name: Build Supplier Sync v2.0.18
+
+on:
+  push:
+    paths:
+      - '.github/workflows/build-v2.0.18.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact v2.0.17 source
+        uses: actions/checkout@v6
+        with:
+          ref: recovery/v2.0.17-exact-source
+          path: src
+          fetch-depth: 0
+
+      - name: Checkout release repository
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: rel
+          fetch-depth: 0
+
+      - name: Patch source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 rel/.release-tools/patch-v2.0.18.py
+
+      - name: Validate PHP and v2.0.18 invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          find src -name '*.php' -print0 | xargs -0 -n1 php -l >/tmp/php-lint.txt
+          cat /tmp/php-lint.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('src/includes/class-asss-importer.php').read_text()
+          checks={
+            'global placeholder filter':'is_invalid_storefront_media_url',
+            'placeholder phrase':'imagenotyetavailableforselectedcolor',
+            'sideload safety':'if ($this->is_invalid_storefront_media_url($url)) return 0;',
+            'cleanup hook':'cleanup_invalid_supplier_storefront_media',
+            'size normalizer':'normalize_product_storefront_sizes',
+            'global one size alias':"['os','osfa','onesize','onesizefitsall']",
+            'OSFA display':"return 'OSFA';",
+            'Richardson verified alias':"'richardson|112'",
+          }
+          missing=[k for k,v in checks.items() if v not in s]
+          if missing: raise SystemExit('Missing invariants: '+', '.join(missing))
+          if "define('ASSS_VERSION', '2.0.18');" not in Path('src/all-star-supplier-sync.php').read_text():
+              raise SystemExit('Version constant not bumped')
+          print('v2.0.18 source invariants passed')
+          PY
+
+      - name: Save exact v2.0.18 source branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C recovery/v2.0.18-exact-source
+          git add -A
+          git commit -m 'release: exact v2.0.18 plugin source'
+          git push --force-with-lease origin HEAD:refs/heads/recovery/v2.0.18-exact-source
+
+      - name: Build package and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf package
+          mkdir -p package/all-star-supplier-sync
+          rsync -a --exclude='.git' src/ package/all-star-supplier-sync/
+          rm -rf package/all-star-supplier-sync/.github package/all-star-supplier-sync/.release-tools
+          (cd package && zip -qr ../rel/all-star-supplier-sync-2.0.18.zip all-star-supplier-sync)
+          unzip -t rel/all-star-supplier-sync-2.0.18.zip >/dev/null
+          unzip -l rel/all-star-supplier-sync-2.0.18.zip | grep -q 'all-star-supplier-sync/all-star-supplier-sync.php'
+          SHA=$(sha256sum rel/all-star-supplier-sync-2.0.18.zip | awk '{print $1}')
+          cat > rel/latest.json <<EOF
+          {
+            "version": "2.0.18",
+            "package": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/v2.0.18/all-star-supplier-sync-2.0.18.zip",
+            "url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/tag/v2.0.18",
+            "name": "All Star Supplier Sync v2.0.18"
+          }
+          EOF
+          cd rel
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add all-star-supplier-sync-2.0.18.zip latest.json
+          git commit -m 'release: publish Supplier Sync v2.0.18'
+          git push origin main
+          gh release create v2.0.18 all-star-supplier-sync-2.0.18.zip \
+            --target main \
+            --title 'All Star Supplier Sync v2.0.18' \
+            --notes "Global invalid-storefront-media filtering plus canonical OSFA display. Supplier placeholders, unavailable-color graphics, swatches/charts/reference graphics are blocked before download and cleaned from Supplier Sync-owned media while merchant images are preserved. OS/OSFA/One Size labels display as OSFA across suppliers; Richardson 112's verified M/L equivalent also displays OSFA while unrelated M/L sizes remain unchanged. Raw supplier size identities remain intact. SHA-256: ${SHA}"
+          echo "SHA256=${SHA}"
+
+      - name: Remove temporary release tooling
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd rel
+          git pull --rebase origin main
+          git rm -f .github/workflows/build-v2.0.18.yml .release-tools/patch-v2.0.18.py
+          rmdir .release-tools 2>/dev/null || true
+          git commit -m 'cleanup: remove v2.0.18 release tooling'
+          git push origin main
