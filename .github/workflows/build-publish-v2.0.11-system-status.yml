@@ -132,3 +132,5 @@ jobs:
           else
             gh release create v2.0.11 all-star-supplier-sync-2.0.11.zip --target main --title 'All Star Supplier Sync v2.0.11' --notes-file RELEASE-2.0.11.md
           fi
+
+# rerun after PHP status-string quote correction
