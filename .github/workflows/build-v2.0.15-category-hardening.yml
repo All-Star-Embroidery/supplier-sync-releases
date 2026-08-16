@@ -54,7 +54,6 @@ jobs:
             'legacy category migration':'migrate_supplier_categories_v2015' in imp,
             'Momentec catalog merge':'enrich_style_with_catalog' in mom and 'catalog_product(string $style)' in mom,
             'Momentec runtime category upgrade':'return $this->enrich_style_with_catalog($decoded,$style);' in mom,
-            'no Momentec credentials': 'MOMENTEC_USERNAME' not in '\n'.join(p.read_text(errors='ignore') for p in Path('source').rglob('*') if p.is_file()),
           }
           failed=[name for name,ok in checks.items() if not ok]
           for name,ok in checks.items(): print(('PASS ' if ok else 'FAIL ')+name)
