@@ -2992,17 +2992,20 @@ class ASSS_Importer {
     }
 
     private function momentec_parent_featured_url(array $data,array $variants): string {
-        $candidates=[
-            (string)($data['images']['product'] ?? ''),
-            (string)($data['images']['thumbnail'] ?? ''),
-        ];
+        // Momentec parent featured-image priority:
+        // 1. Product-level images.thumbnail.
+        // 2. First selected variation primary_image.
+        // 3. Product-level images.product.
+        // 4. No gallery fallback; leave it for manual selection.
+        $thumbnail=$this->momentec_media_url((string)($data['images']['thumbnail'] ?? ''));
+        if($thumbnail!=='')return $thumbnail;
         foreach($variants as $row){
             if(!is_array($row))continue;
-            $candidates[]=(string)($row['primary_image'] ?? '');
-            foreach((array)($row['gallery'] ?? []) as $raw)$candidates[]=(string)$raw;
-            if(count($candidates)>=12)break;
+            $primary=$this->momentec_media_url((string)($row['primary_image'] ?? ''));
+            if($primary!=='')return $primary;
         }
-        foreach($candidates as $raw){$u=$this->momentec_media_url((string)$raw);if($u!=='')return $u;}
+        $product=$this->momentec_media_url((string)($data['images']['product'] ?? ''));
+        if($product!=='')return $product;
         return '';
     }
 
@@ -3020,12 +3023,19 @@ class ASSS_Importer {
     private function sync_momentec_parent_media(int $product_id,array $data,array $variants): void {
         $product=wc_get_product($product_id);if(!$product)return;
         $urls=[];
-        foreach([(string)($data['images']['product'] ?? ''),(string)($data['images']['thumbnail'] ?? '')] as $raw){$u=$this->momentec_media_url($raw);if($u!=='')$urls[$u]=true;}
-        foreach($variants as $row){foreach((array)($row['gallery'] ?? []) as $raw){$u=$this->momentec_media_url((string)$raw);if($u!=='')$urls[$u]=true;}if(count($urls)>=8)break;}
+        foreach([(string)($data['images']['thumbnail'] ?? ''),(string)($data['images']['product'] ?? '')] as $raw){$u=$this->momentec_media_url($raw);if($u!=='')$urls[$u]=true;}
+        foreach($variants as $row){
+            if(!is_array($row))continue;
+            $p=$this->momentec_media_url((string)($row['primary_image'] ?? ''));if($p!=='')$urls[$p]=true;
+            foreach((array)($row['gallery'] ?? []) as $raw){$u=$this->momentec_media_url((string)$raw);if($u!=='')$urls[$u]=true;}
+            if(count($urls)>=8)break;
+        }
         if(!$urls)return;$ids=[];
         foreach(array_slice(array_keys($urls),0,8) as $url){$id=$this->sideload($url,$product_id,'momentec');if($id)$ids[]=(int)$id;}
         $ids=array_values(array_unique($ids));if(!$ids)return;
-        $current=(int)$product->get_image_id();if(!$current||$this->is_supplier_attachment($current))$product->set_image_id($ids[0]);
+        // Never promote a background gallery image to featured image. The
+        // featured image has already been chosen by the explicit priority rule,
+        // or intentionally left blank for the merchant to choose manually.
         $manual=[];foreach($product->get_gallery_image_ids() as $id)if((int)$id&&!$this->is_supplier_attachment((int)$id))$manual[]=(int)$id;
         $primary=(int)$product->get_image_id();$supplier_gallery=array_values(array_filter($ids,static fn($id)=>(int)$id!==$primary));
         $product->set_gallery_image_ids(array_values(array_unique(array_merge($supplier_gallery,$manual))));$product->save();
