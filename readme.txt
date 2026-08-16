@@ -4,7 +4,7 @@ Tags: woocommerce, supplier, inventory, sanmar, ssactivewear, github-actions
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 2.0.20
+Stable tag: 2.0.21
 License: Proprietary
 
 Curated multi-supplier-to-WooCommerce synchronization for All Star. SanMar and S&S Activewear connectors included.
@@ -21,7 +21,7 @@ Core V2 behavior:
 * Supplier-specific stock, cost, SKU/identity and S&S GTIN remain separate even when both suppliers map to one WooCommerce variation.
 * Combined inventory or Preferred Supplier inventory can be selected globally, with product-level overrides.
 * Full color-specific variation galleries are retained where supplied, while merchant-owned imagery remains protected.
-* Every reliable supplier category is added without erasing merchant categories, improving WooCommerce and ASBO/bulk-order sorting.
+* Supplier categories are mapped into a controlled storefront taxonomy without erasing merchant categories; raw supplier department/channel labels are retained only as internal metadata.
 * Supplier-managed Main Price is calculated from the preferred available supplier wholesale cost + $20. Manual price edits take ownership and are preserved.
 * Supplier-managed ASBO tiers are generated as Embroidery Main / Main-$2 / Main-$4 / Main-$6 at 1/20/50/100 units, with Patch always +$3. Manual ASBO matrix edits take ownership and are preserved.
 * Active Products provides Quick Repair and queued Repair Selected.
@@ -40,6 +40,14 @@ Core V2 behavior:
 6. Use Suppliers -> Add Products to import new styles or explicitly link a second supplier to an existing Brand + Style product.
 
 == Changelog ==
+
+= 2.0.21 =
+* Standardized supplier categories across SanMar, S&S Activewear, and Momentec using one controlled WooCommerce storefront vocabulary instead of copying raw supplier department/channel strings into Product Categories.
+* Headwear products now consistently receive Headwear, Hats, and Caps & Hats plus a useful subtype such as Caps, Bucket Hats, Beanies, or Visors when detected. Momentec labels such as Adult | HEADWEAR | HEADWEAR ASB / BUCKET HAT no longer become literal Woo categories.
+* Raw supplier category values are retained in supplier-specific internal metadata for troubleshooting while stale unassigned supplier-created category terms are conservatively pruned.
+* Standardized OS, OSFA, One Size, and One Size Fits All to the customer-facing label One Size Fits All across the whole WooCommerce variable-product catalog. Verified style-specific one-size aliases such as Richardson 112 M/L also display as One Size Fits All on supplier-linked products.
+* Fixed the parent/child size mismatch that could turn Momentec OS variations into WooCommerce Any Size rows. Parent Size options and variation attributes now use the same canonical term from initial import onward.
+* Added a one-time migration that repairs existing variable products, parent Size options, variation Size attributes, defaults, supplier categories, and supplier-linked one-size aliases without changing raw supplier size metadata.
 
 = 2.0.20 =
 * Moved bridge-token regeneration to a bottom-of-page Danger Zone and added acknowledgement, typed REGENERATE confirmation, browser confirmation, and server-side enforcement before a token can change.
