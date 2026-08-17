@@ -1,34 +1,4 @@
-#!/usr/bin/env python3
-from pathlib import Path
-import re
-import sys
-
-if len(sys.argv) != 2:
-    raise SystemExit('usage: v207_patch.py <source-dir>')
-root = Path(sys.argv[1])
-
-
-def replace_once(text, old, new, label):
-    if old not in text:
-        raise SystemExit(f'v2.0.7 patch marker missing: {label}')
-    return text.replace(old, new, 1)
-
-
-# Version.
-main = root / 'all-star-supplier-sync.php'
-text = main.read_text(encoding='utf-8')
-text = replace_once(text, 'Version: 2.0.6', 'Version: 2.0.7', 'plugin header version')
-text = replace_once(text, "define('ASSS_VERSION', '2.0.6');", "define('ASSS_VERSION', '2.0.7');", 'ASSS_VERSION')
-text = text.replace(
-    'SanMar, S&S Activewear, and Momentec production supplier connectors with GitHub Actions bridge synchronization.',
-    'SanMar, S&S Activewear, and Momentec production supplier connectors with full catalog browsing through GitHub Actions.'
-)
-main.write_text(text, encoding='utf-8')
-
-
-# Momentec: full official-feed catalog + v2 hydrated style cache + request queue.
-momentec = root / 'includes/class-asss-momentec.php'
-momentec.write_text(r'''<?php
+<?php
 if (!defined('ABSPATH')) exit;
 
 /**
@@ -239,6 +209,49 @@ class ASSS_Momentec {
         return is_array($data['products'] ?? null) ? count($data['products']) : 0;
     }
 
+
+    /** Find the official catalog-feed summary for one style. */
+    public function catalog_product(string $style): array {
+        $key = $this->style_key($style);
+        foreach ((array)($this->catalog_data()['products'] ?? []) as $row) {
+            if (!is_array($row)) continue;
+            if ($this->style_key((string)($row['style'] ?? '')) === $key) return $row;
+        }
+        return [];
+    }
+
+    /**
+     * Hydrated v2 data owns customer pricing/SKUs/media; the official product
+     * feed owns browse metadata such as Category. Merge them so Woo imports get
+     * the richest trustworthy category set without sending credentials to WP.
+     */
+    private function enrich_style_with_catalog(array $product, string $style): array {
+        $catalog = $this->catalog_product($style);
+        if (!$catalog) return $product;
+
+        $categories = [];
+        foreach ([(string)($product['category'] ?? ''), (string)($product['base_category'] ?? ''), (string)($catalog['category'] ?? '')] as $cat) {
+            $cat = trim($cat); if ($cat !== '') $categories[] = $cat;
+        }
+        foreach ([(array)($product['categories'] ?? []), (array)($catalog['categories'] ?? [])] as $set) {
+            foreach ($set as $cat) { $cat = trim((string)$cat); if ($cat !== '') $categories[] = $cat; }
+        }
+        $categories = $this->clean_text_list($categories);
+        if ($categories) $product['categories'] = $categories;
+        if (trim((string)($product['category'] ?? '')) === '') {
+            $product['category'] = sanitize_text_field((string)($catalog['category'] ?? ($categories[0] ?? '')));
+        }
+        if (trim((string)($product['brand'] ?? '')) === '') $product['brand'] = sanitize_text_field((string)($catalog['brand'] ?? ''));
+        if (trim((string)($product['title'] ?? '')) === '') $product['title'] = sanitize_text_field((string)($catalog['title'] ?? $style));
+        if (trim((string)($product['description'] ?? '')) === '') $product['description'] = sanitize_textarea_field((string)($catalog['description'] ?? ''));
+        if (trim((string)($product['division'] ?? '')) === '') $product['division'] = sanitize_text_field((string)($catalog['division'] ?? ''));
+        if (!is_array($product['images'] ?? null)) $product['images'] = [];
+        $catalog_image = esc_url_raw((string)($catalog['image'] ?? ''));
+        if ($catalog_image !== '' && empty($product['images']['thumbnail'])) $product['images']['thumbnail'] = $catalog_image;
+        if ($catalog_image !== '' && empty($product['images']['product'])) $product['images']['product'] = $catalog_image;
+        return $product;
+    }
+
     public function catalog_facets(): array {
         $brands=[]; $categories=[];
         foreach ((array)($this->catalog_data()['products'] ?? []) as $row) {
@@ -313,7 +326,7 @@ class ASSS_Momentec {
         if(!in_array($status,['pending','processing','failed','complete'],true))return new WP_Error('momentec_request_status','Invalid Momentec request status.',['status'=>400]);
         $key=$this->style_key($style); $requests=$this->request_manifest(); $row=$requests[$key] ?? null;
         if(!is_array($row) || !hash_equals((string)($row['request_id'] ?? ''),$request_id))return new WP_Error('momentec_request_id','Momentec request ID does not match the queued style.',['status'=>409]);
-        $row['status']=$status; $row['updated_at']=current_time('mysql'); $row['message']=sanitize_text_field(mb_substr($message,0,300));
+        $row['status']=$status; $row['updated_at']=current_time('mysql'); $row['message']=sanitize_text_field(substr($message,0,300));
         if($status==='processing')$row['attempts']=(int)($row['attempts'] ?? 0)+1;
         $requests[$key]=$row; update_option(self::REQUEST_OPTION,$requests,false);
         return $row;
@@ -326,8 +339,9 @@ class ASSS_Momentec {
         update_option(self::REQUEST_OPTION,$requests,false);
     }
 
-    public function catalog_search(string $search='', string $brand='', string $category='', int $page=1, int $per_page=50): array {
+    public function catalog_search(string $search='', string $brand='', string $category='', int $page=1, int $per_page=50, string $view='all'): array {
         $needle=mb_strtolower(trim($search)); $brand=trim($brand); $category=trim($category); $rows=[];
+        $view=in_array($view,['all','ready'],true)?$view:'all';
         $hydrated=$this->style_manifest();
         foreach ((array)($this->catalog_data()['products'] ?? []) as $row) {
             if(!is_array($row))continue;
@@ -341,6 +355,7 @@ class ASSS_Momentec {
                 if(mb_strpos($hay,$needle)===false)continue;
             }
             $style=(string)($row['style'] ?? ''); $key=$this->style_key($style); $request=$this->request_for_style($style);
+            if($view==='ready' && !isset($hydrated[$key]))continue;
             $row['hydrated']=isset($hydrated[$key]);
             $row['request_status']=sanitize_key((string)($request['status'] ?? ''));
             $row['request_message']=sanitize_text_field((string)($request['message'] ?? ''));
@@ -382,7 +397,7 @@ class ASSS_Momentec {
             if(isset($seen_skus[$sku_key])||isset($seen_combos[$combo]))return new WP_Error('momentec_duplicate_variant','Momentec payload contains a duplicate exact SKU or Color+Size combination.',['status'=>409]);
             $seen_skus[$sku_key]=1;$seen_combos[$combo]=1;
         }
-        $product['supplier']='momentec';$product['supplier_name']=self::LABEL;$product['style']=$style;$product['supplier_style_id']=$style;$product['received_at']=current_time('mysql');
+        $product=$this->enrich_style_with_catalog($product,$style);$product['supplier']='momentec';$product['supplier_name']=self::LABEL;$product['style']=$style;$product['supplier_style_id']=$style;$product['received_at']=current_time('mysql');
         $product['bridge_meta']=['source'=>sanitize_text_field((string)($meta['source'] ?? 'momentec-v2-production')),'source_timestamp'=>sanitize_text_field((string)($meta['source_timestamp'] ?? ''))];
         $file=$this->style_filename($style);$write=$this->write_json_atomic($this->styles_dir().'/'.$file,$product);if(is_wp_error($write))return $write;
         $manifest=$this->style_manifest();$summary=$this->summary($product);$summary['file']=$file;$summary['received_at']=current_time('mysql');$summary['source']=sanitize_text_field((string)($meta['source'] ?? 'momentec-v2-production'));
@@ -403,7 +418,10 @@ class ASSS_Momentec {
         $key=$this->style_key($style);$meta=$this->style_manifest()[$key] ?? [];
         if(!is_array($meta)||empty($meta['file']))return new WP_Error('momentec_style_missing','Momentec customer-specific details are not cached yet. Queue this style from the Momentec catalog and let GitHub hydrate it.');
         $path=$this->styles_dir().'/'.basename((string)$meta['file']);if(!is_file($path))return new WP_Error('momentec_style_file','Momentec cached style file is missing. Queue the style for refresh.');
-        $decoded=json_decode((string)@file_get_contents($path),true);if(!is_array($decoded))return new WP_Error('momentec_style_json','Momentec cached style file is invalid.');return $decoded;
+        $decoded=json_decode((string)@file_get_contents($path),true);if(!is_array($decoded))return new WP_Error('momentec_style_json','Momentec cached style file is invalid.');
+        // Runtime enrichment also upgrades already-cached pre-2.0.15 styles; no
+        // new Momentec API hydration is required just to restore categories.
+        return $this->enrich_style_with_catalog($decoded,$style);
     }
 
     public function purge_legacy_wordpress_connection_values(): void {
@@ -423,153 +441,3 @@ class ASSS_Momentec {
         return ['catalog'=>true,'full_catalog_browse'=>true,'customer_specific_style_hydration'=>true,'inventory'=>true,'orders'=>false,'order_status'=>false,'live_adapter_enabled'=>true,'supplier_auth_location'=>'github-actions','api_version'=>'v2','catalog_source'=>'official-csv-feed','environment'=>'production'];
     }
 }
-''', encoding='utf-8')
-
-
-# Bridge routes/methods/status.
-bridge = root / 'includes/class-asss-bridge.php'
-text = bridge.read_text(encoding='utf-8')
-route_marker = "        register_rest_route('asss/v1', '/bridge/momentec/style', [\n"
-route_add = r'''        register_rest_route('asss/v1', '/bridge/momentec/catalog/batch', [
-            'methods' => 'POST', 'callback' => [$this, 'receive_momentec_catalog_batch'], 'permission_callback' => [$this, 'authorize'],
-        ]);
-        register_rest_route('asss/v1', '/bridge/momentec/requests', [
-            'methods' => 'GET', 'callback' => [$this, 'momentec_requests'], 'permission_callback' => [$this, 'authorize'],
-        ]);
-        register_rest_route('asss/v1', '/bridge/momentec/request-status', [
-            'methods' => 'POST', 'callback' => [$this, 'momentec_request_status'], 'permission_callback' => [$this, 'authorize'],
-        ]);
-'''
-text = replace_once(text, route_marker, route_add + route_marker, 'Momentec catalog routes')
-method_marker = "    public function receive_momentec_style(WP_REST_Request $request) {\n"
-method_add = r'''    public function receive_momentec_catalog_batch(WP_REST_Request $request) {
-        $payload=$request->get_json_params();
-        if(!is_array($payload))return new WP_Error('momentec_catalog_payload','Momentec catalog payload must be JSON.',['status'=>400]);
-        $result=$this->momentec->save_catalog_chunk(
-            sanitize_text_field((string)($payload['batch_id'] ?? '')),
-            (int)($payload['chunk_index'] ?? -1),
-            absint($payload['chunk_count'] ?? 0),
-            is_array($payload['products'] ?? null)?$payload['products']:[],
-            is_array($payload['meta'] ?? null)?$payload['meta']:[]
-        );
-        if(is_wp_error($result))return $result;
-        if(!empty($result['complete']))ASSS_Logger::log('Momentec official browse catalog updated','info',['styles'=>(int)($result['styles'] ?? 0),'source_rows'=>(int)($result['source_rows'] ?? 0)]);
-        return rest_ensure_response(array_merge(['ok'=>true,'supplier'=>'momentec'],$result));
-    }
-
-    public function momentec_requests(WP_REST_Request $request) {
-        $limit=absint($request->get_param('limit') ?: 3);
-        $rows=$this->momentec->pending_requests($limit);
-        return rest_ensure_response(['ok'=>true,'supplier'=>'momentec','count'=>count($rows),'requests'=>$rows]);
-    }
-
-    public function momentec_request_status(WP_REST_Request $request) {
-        $payload=$request->get_json_params();
-        if(!is_array($payload))return new WP_Error('momentec_request_payload','Momentec request status payload must be JSON.',['status'=>400]);
-        $result=$this->momentec->set_request_status(
-            sanitize_text_field((string)($payload['request_id'] ?? '')),
-            sanitize_text_field((string)($payload['style'] ?? '')),
-            sanitize_key((string)($payload['status'] ?? '')),
-            sanitize_text_field((string)($payload['message'] ?? ''))
-        );
-        if(is_wp_error($result))return $result;
-        return rest_ensure_response(['ok'=>true,'supplier'=>'momentec','style'=>(string)($result['style'] ?? ''),'status'=>(string)($result['status'] ?? '')]);
-    }
-
-'''
-text = replace_once(text, method_marker, method_add + method_marker, 'Momentec catalog methods')
-old_status = "            'ss_inventory'=>get_option('asss_ss_inventory_bridge_status', []),\n        ], 200);"
-new_status = "            'ss_inventory'=>get_option('asss_ss_inventory_bridge_status', []),\n            'momentec'=>$this->momentec->status(),\n        ], 200);"
-text = replace_once(text, old_status, new_status, 'bridge Momentec status')
-bridge.write_text(text, encoding='utf-8')
-
-
-# Admin actions and browse UI.
-admin = root / 'includes/class-asss-admin.php'
-text = admin.read_text(encoding='utf-8')
-action_marker = "        if (!empty($_POST['asss_import_momentec_style'])) {\n"
-action_add = r'''        if (!empty($_POST['asss_momentec_queue_styles'])) {
-            check_admin_referer('asss_momentec_catalog');
-            $styles=array_values(array_unique(array_filter(array_map('sanitize_text_field',(array)($_POST['momentec_styles'] ?? [])))));
-            if(!$styles){
-                wp_safe_redirect(add_query_arg(['page'=>'asss-suppliers','supplier'=>'momentec','asss_err'=>'Choose at least one Momentec style first.'],admin_url('admin.php')));exit;
-            }
-            $result=$this->momentec->queue_style_requests($styles,get_current_user_id(),true);
-            $message='Queued '.(int)$result['queued'].' Momentec style'.((int)$result['queued']===1?'':'s').' for customer-specific production details.';
-            if(!empty($result['unknown']))$message.=' '.count($result['unknown']).' unknown style(s) were skipped.';
-            wp_safe_redirect(add_query_arg(['page'=>'asss-suppliers','supplier'=>'momentec','asss_msg'=>$message],admin_url('admin.php')));exit;
-        }
-
-'''
-text = replace_once(text, action_marker, action_add + action_marker, 'Momentec queue admin action')
-
-pattern = re.compile(r"        if \(\$supplier === 'momentec'\) \{.*?        \}\n\n        if \(\$supplier === 'ss'\) \{", re.S)
-new_block = r'''        if ($supplier === 'momentec') {
-            $status=$this->momentec->status();
-            $search=sanitize_text_field(wp_unslash($_GET['q'] ?? ''));
-            $brand=sanitize_text_field(wp_unslash($_GET['brand'] ?? ''));
-            $category=sanitize_text_field(wp_unslash($_GET['category'] ?? ''));
-            $page_num=max(1,absint($_GET['catalog_page'] ?? 1));
-            $facets=$this->momentec->catalog_facets();
-            $catalog=$this->momentec->catalog_search($search,$brand,$category,$page_num,50);
-            $meta=$this->momentec->catalog_meta();
-
-            echo '<div class="notice notice-success inline"><p><strong>Momentec production is connected through GitHub Actions.</strong> The full browse catalog comes from Momentec\'s official product-data feed; customer-specific cost/details are fetched securely through production v2 only after you select a style.</p></div>';
-            echo '<p><strong>Browse catalog:</strong> '.number_format_i18n((int)($status['catalog_styles'] ?? 0)).' styles &nbsp; <strong>Customer-detail cache:</strong> '.number_format_i18n((int)($status['cached_styles'] ?? 0)).' styles / '.number_format_i18n((int)($status['cached_variants'] ?? 0)).' exact variations';
-            if(!empty($meta['received_at']))echo ' &nbsp; <strong>Catalog updated:</strong> '.esc_html((string)$meta['received_at']);
-            echo '.</p>';
-            if(empty($status['catalog_styles'])){
-                echo '<div class="notice notice-warning inline"><p>The official Momentec browse catalog has not reached WordPress yet. Run <strong>Momentec Production Catalog Sync</strong> in <code>rolejarczyk/ASE.ProductSync</code>. Once it publishes, this page will show the full catalog automatically.</p></div>';
-                $this->wrap_end();return;
-            }
-
-            echo '<form method="get"><input type="hidden" name="page" value="asss-suppliers"><input type="hidden" name="supplier" value="momentec"><table class="form-table" style="max-width:1040px"><tr><th style="width:150px">Brand</th><td><select name="brand"><option value="">All brands</option>';
-            foreach((array)($facets['brands'] ?? []) as $value)echo '<option '.selected($brand,$value,false).' value="'.esc_attr($value).'">'.esc_html($value).'</option>';
-            echo '</select></td></tr><tr><th>Category</th><td><select name="category"><option value="">All categories</option>';
-            foreach((array)($facets['categories'] ?? []) as $value)echo '<option '.selected($category,$value,false).' value="'.esc_attr($value).'">'.esc_html($value).'</option>';
-            echo '</select></td></tr><tr><th>Search</th><td><input class="regular-text" name="q" value="'.esc_attr($search).'" placeholder="Style, product, brand, division, or category"> <button class="button button-primary">Browse Catalog</button></td></tr></table></form>';
-
-            echo '<p><strong>'.number_format_i18n((int)$catalog['total']).'</strong> matching styles. Select one or more styles and click <strong>Fetch / Refresh Customer Details</strong>. GitHub will securely hydrate them with your Momentec account pricing, exact Color+Size SKUs, inventory, and galleries; they will then become ready for Review &amp; Import.</p>';
-            if(empty($catalog['rows'])){echo '<p><em>No Momentec catalog styles match these filters.</em></p>';$this->wrap_end();return;}
-
-            echo '<style>.asss-momentec-table{width:100%;border-collapse:collapse}.asss-momentec-table th,.asss-momentec-table td{text-align:left;vertical-align:middle;padding:10px 12px;border-right:1px solid #e2e4e7;border-bottom:1px solid #e2e4e7}.asss-momentec-table th:last-child,.asss-momentec-table td:last-child{border-right:0}.asss-momentec-status{display:inline-block;padding:3px 7px;border-radius:999px;background:#f0f0f1;font-size:12px}.asss-momentec-status.ready{background:#d7f0df}.asss-momentec-status.pending{background:#fff3cd}.asss-momentec-status.failed{background:#f8d7da}</style>';
-            echo '<form method="post">';wp_nonce_field('asss_momentec_catalog');
-            echo '<div style="margin:12px 0"><button class="button button-primary" name="asss_momentec_queue_styles" value="1">Fetch / Refresh Customer Details</button> <span class="description">The GitHub worker checks the queue every five minutes.</span></div>';
-            echo '<table class="widefat striped asss-momentec-table"><thead><tr><th style="width:34px"><input type="checkbox" onclick="document.querySelectorAll(\'.asss-momentec-pick\').forEach(el=>el.checked=this.checked)"></th><th style="width:68px">Image</th><th>Product</th><th>Style</th><th>Brand</th><th>Category</th><th>Colors</th><th>Sizes</th><th>Exact SKUs</th><th>Status</th><th>Action</th></tr></thead><tbody>';
-            foreach($catalog['rows'] as $row){
-                $style=(string)($row['style'] ?? '');$image=(string)($row['image'] ?? '');$hydrated=!empty($row['hydrated']);$request_status=(string)($row['request_status'] ?? '');
-                echo '<tr><td><input class="asss-momentec-pick" type="checkbox" name="momentec_styles[]" value="'.esc_attr($style).'"></td><td>'.($image!==''?'<img src="'.esc_url($image).'" alt="" onerror="this.style.display=&quot;none&quot;" style="width:54px;height:54px;object-fit:contain;background:#fff;border:1px solid #e2e4e7;border-radius:4px">':'—').'</td>';
-                echo '<td><strong>'.esc_html((string)($row['title'] ?? $style)).'</strong>';if(!empty($row['division']))echo '<br><small>'.esc_html((string)$row['division']).'</small>';echo '</td><td><code>'.esc_html($style).'</code></td><td>'.esc_html((string)($row['brand'] ?? '')).'</td><td>'.esc_html((string)($row['category'] ?? '—')).'</td><td>'.(int)($row['color_count'] ?? 0).'</td><td>'.(int)($row['size_count'] ?? 0).'</td><td><strong>'.(int)($row['exact_variation_count'] ?? 0).'</strong>';
-                if(!empty($row['sparse_missing']))echo '<br><small>'.number_format_i18n((int)$row['sparse_missing']).' fake Cartesian combos avoided</small>';echo '</td><td>';
-                if($hydrated)echo '<span class="asss-momentec-status ready">Ready</span>';
-                elseif($request_status==='processing')echo '<span class="asss-momentec-status pending">Fetching…</span>';
-                elseif($request_status==='pending')echo '<span class="asss-momentec-status pending">Queued</span>';
-                elseif($request_status==='failed'){echo '<span class="asss-momentec-status failed">Failed</span>';if(!empty($row['request_message']))echo '<br><small>'.esc_html((string)$row['request_message']).'</small>';}
-                else echo '<span class="asss-momentec-status">Needs details</span>';
-                echo '</td><td>';
-                if($hydrated){$review=add_query_arg(['page'=>'asss-momentec-review','style'=>$style],admin_url('admin.php'));echo '<a class="button button-primary" href="'.esc_url($review).'">Review &amp; Import</a>';}
-                elseif(in_array($request_status,['pending','processing'],true))echo '<span class="description">Automatic GitHub hydration queued</span>';
-                else echo '<span class="description">Select this row above</span>';
-                echo '</td></tr>';
-            }
-            echo '</tbody></table><div style="margin:12px 0"><button class="button button-primary" name="asss_momentec_queue_styles" value="1">Fetch / Refresh Customer Details</button></div></form>';
-
-            if((int)$catalog['pages']>1){
-                echo '<div class="tablenav"><div class="tablenav-pages">';
-                for($p=1;$p<=(int)$catalog['pages'];$p++){
-                    if($p!==1 && $p!==(int)$catalog['pages'] && abs($p-(int)$catalog['page'])>2)continue;
-                    $url=add_query_arg(['page'=>'asss-suppliers','supplier'=>'momentec','q'=>$search,'brand'=>$brand,'category'=>$category,'catalog_page'=>$p],admin_url('admin.php'));
-                    echo $p===(int)$catalog['page']?'<span class="button disabled">'.$p.'</span> ':'<a class="button" href="'.esc_url($url).'">'.$p.'</a> ';
-                }
-                echo '</div></div>';
-            }
-            $this->wrap_end(); return;
-        }
-
-        if ($supplier === 'ss') {'''
-text, n = pattern.subn(new_block, text, count=1)
-if n != 1:
-    raise SystemExit(f'v2.0.7 Momentec admin browse block replacement count={n}')
-admin.write_text(text, encoding='utf-8')
-
-print('Applied All Star Supplier Sync v2.0.7 Momentec full catalog patch.')
