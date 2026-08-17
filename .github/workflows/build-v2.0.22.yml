@@ -17,6 +17,7 @@ jobs:
         with:
           ref: recovery/v2.0.21-exact-source
           path: source
+
       - name: Checkout release repository
         uses: actions/checkout@v6
         with:
@@ -24,144 +25,8 @@ jobs:
           path: release
           fetch-depth: 0
 
-      - name: Patch exact source
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import re
-
-          root=Path('source')
-          imp=root/'includes/class-asss-importer.php'
-          s=imp.read_text()
-
-          # New migration hook.
-          old="        add_action('admin_init', [$this, 'migrate_standard_categories_and_one_size_v2021'], 38);\n"
-          new=old+"        add_action('admin_init', [$this, 'migrate_momentec_shipping_weights_v2022'], 39);\n"
-          assert old in s
-          s=s.replace(old,new,1)
-
-          # Managed supplier weight helper. Blank/managed values update; a merchant-edited weight wins.
-          marker="    private function filter_rows_for_product(int $product_id, array $rows): array {\n"
-          helper=r'''    /** Apply a supplier shipping weight without overwriting a merchant-owned edit. */
-    private function apply_supplier_variation_weight(WC_Product_Variation $variation, float $weight_lb, string $supplier): void {
-        if ($weight_lb <= 0) return;
-        $formatted = $this->weight_for_store($weight_lb);
-        $current = (string)$variation->get_weight('edit');
-        $managed = (string)$variation->get_meta('_asss_weight_managed') === 'yes';
-        $last = (string)$variation->get_meta('_asss_weight_last_value');
-        if ($managed && $current !== '' && $last !== '' && (float)$current !== (float)$last) {
-            $variation->delete_meta_data('_asss_weight_managed');
-            $variation->delete_meta_data('_asss_weight_source');
-            $variation->delete_meta_data('_asss_weight_last_value');
-            ASSS_Logger::log('Variation shipping-weight ownership changed to merchant', 'info', ['variation_id'=>$variation->get_id(),'supplier'=>$supplier]);
-            return;
-        }
-        if ($current !== '' && !$managed) return;
-        $variation->set_weight($formatted);
-        $variation->update_meta_data('_asss_supplier_weight_lb', (string)wc_format_decimal($weight_lb, 6));
-        $variation->update_meta_data('_asss_weight_managed', 'yes');
-        $variation->update_meta_data('_asss_weight_source', sanitize_key($supplier));
-        $variation->update_meta_data('_asss_weight_last_value', $formatted);
-    }
-
-'''
-          assert marker in s
-          s=s.replace(marker,helper+marker,1)
-
-          # Momentec child variation gets exact feed weight.
-          old="""        if(isset($row['qty'])&&$row['qty']!==null&&$row['qty']!==''&&is_numeric($row['qty'])){\n            $qty=max(0,(int)$row['qty']);$v->set_manage_stock(true);$v->set_backorders('no');$v->set_stock_quantity($qty);$v->set_stock_status($qty>0?'instock':'outofstock');\n        }\n        [$price,$source]=$this->momentec_variation_price($row);\n"""
-          new="""        if(isset($row['qty'])&&$row['qty']!==null&&$row['qty']!==''&&is_numeric($row['qty'])){\n            $qty=max(0,(int)$row['qty']);$v->set_manage_stock(true);$v->set_backorders('no');$v->set_stock_quantity($qty);$v->set_stock_status($qty>0?'instock':'outofstock');\n        }\n        $momentec_weight = $row['weight_lb'] ?? null;\n        if ($momentec_weight !== null && is_numeric($momentec_weight) && (float)$momentec_weight > 0) {\n            $this->apply_supplier_variation_weight($v, (float)$momentec_weight, 'momentec');\n            $v->update_meta_data('_asss_momentec_weight_lb', (string)wc_format_decimal((float)$momentec_weight, 6));\n            $v->update_meta_data('_asss_momentec_weight_source', sanitize_text_field((string)($row['weight_source'] ?? 'official-product-feed')));\n            $v->update_meta_data('_asss_momentec_weight_value', sanitize_text_field((string)($row['weight_value'] ?? '')));\n            $v->update_meta_data('_asss_momentec_weight_unit', sanitize_text_field((string)($row['weight_unit'] ?? '')));\n        }\n        [$price,$source]=$this->momentec_variation_price($row);\n"""
-          assert old in s
-          s=s.replace(old,new,1)
-
-          # Momentec source record retains weight for multi-supplier intelligence/repair.
-          old="""            'sku'=>$sku,'sku_id'=>$supplier_id,'unique_key'=>$supplier_id,'color'=>$color,'size'=>$size,'cost'=>$row['customer_price'] ?? '',\n            'retail_price'=>$row['retail_price'] ?? '','inventory_qty'=>isset($row['qty'])&&is_numeric($row['qty'])?(int)$row['qty']:null,\n"""
-          new="""            'sku'=>$sku,'sku_id'=>$supplier_id,'unique_key'=>$supplier_id,'color'=>$color,'size'=>$size,'cost'=>$row['customer_price'] ?? '',\n            'weight_lb'=>$row['weight_lb'] ?? null,'weight_source'=>(string)($row['weight_source'] ?? ''),\n            'retail_price'=>$row['retail_price'] ?? '','inventory_qty'=>isset($row['qty'])&&is_numeric($row['qty'])?(int)$row['qty']:null,\n"""
-          assert old in s
-          s=s.replace(old,new,1)
-
-          # Existing variation path while linking Momentec also receives weight if blank/managed.
-          needle="$existing=wc_get_product($vid);if(!empty($this->sanmar->settings()['sync_images'])&&$existing instanceof WC_Product_Variation&&(!empty($row['gallery'])||!empty($row['primary_image'])))update_post_meta($vid,'_asss_momentec_media_pending','yes');}"
-          repl="$existing=wc_get_product($vid);if($existing instanceof WC_Product_Variation && isset($row['weight_lb']) && is_numeric($row['weight_lb']) && (float)$row['weight_lb']>0){$this->apply_supplier_variation_weight($existing,(float)$row['weight_lb'],'momentec');$existing->update_meta_data('_asss_momentec_weight_lb',(string)wc_format_decimal((float)$row['weight_lb'],6));$existing->update_meta_data('_asss_momentec_weight_source',sanitize_text_field((string)($row['weight_source'] ?? 'official-product-feed')));$existing->save();}if(!empty($this->sanmar->settings()['sync_images'])&&$existing instanceof WC_Product_Variation&&(!empty($row['gallery'])||!empty($row['primary_image'])))update_post_meta($vid,'_asss_momentec_media_pending','yes');}"
-          assert needle in s
-          s=s.replace(needle,repl,1)
-
-          # Add weight into the link source payload too (there is a second compact register call).
-          compact="'sku'=>(string)($row['sku'] ?? ''),'sku_id'=>$supplier_id,'unique_key'=>$supplier_id,'color'=>$color,'size'=>$size,'cost'=>$row['customer_price'] ?? '','retail_price'"
-          compact_new="'sku'=>(string)($row['sku'] ?? ''),'sku_id'=>$supplier_id,'unique_key'=>$supplier_id,'color'=>$color,'size'=>$size,'cost'=>$row['customer_price'] ?? '','weight_lb'=>$row['weight_lb'] ?? null,'weight_source'=>(string)($row['weight_source'] ?? ''),'retail_price'"
-          assert compact in s
-          s=s.replace(compact,compact_new,1)
-
-          # Momentec audit treats expected shipping weight as critical coverage.
-          s=s.replace("$missing_price=0;$missing_image=0;$missing_gallery=0;$missing_sku=0;","$missing_price=0;$missing_image=0;$missing_gallery=0;$missing_sku=0;$missing_weight=0;",1)
-          audit_needle="if($v->get_sku('edit')==='')$missing_sku++;if(!empty($this->sanmar->settings()['sync_images'])"
-          audit_repl="if($v->get_sku('edit')==='')$missing_sku++;$expected_weight=$row['weight_lb'] ?? null;if($expected_weight!==null&&is_numeric($expected_weight)&&(float)$expected_weight>0&&$v->get_weight('edit')==='')$missing_weight++;if(!empty($this->sanmar->settings()['sync_images'])"
-          assert audit_needle in s
-          s=s.replace(audit_needle,audit_repl,1)
-          s=s.replace("'missing_sku'=>$missing_sku,'created'=>$created", "'missing_sku'=>$missing_sku,'missing_weight'=>$missing_weight,'created'=>$created",1)
-          s=s.replace("array_sum([$audit['missing_expected'],$missing_price,$missing_image,$missing_gallery,$missing_sku])", "array_sum([$audit['missing_expected'],$missing_price,$missing_image,$missing_gallery,$missing_sku,$missing_weight])")
-
-          # One-time migration: refresh old Momentec caches through GitHub, or repair immediately when weight is already cached.
-          migration_marker="    /** Local, one-time cleanup for products imported before 2.0.18. */\n"
-          migration=r'''    /**
-     * v2.0.22: shipping is weight-based, so every linked Momentec style must be
-     * rehydrated from GitHub if its older cache predates official feed weights.
-     */
-    public function migrate_momentec_shipping_weights_v2022(): void {
-        if (!current_user_can('manage_woocommerce')) return;
-        if ((string)get_option('asss_v2022_momentec_weights_migrated','') === 'yes') return;
-        $ids = get_posts([
-            'post_type'=>'product','post_status'=>'any','fields'=>'ids','posts_per_page'=>-1,'no_found_rows'=>true,
-            'meta_key'=>'_asss_momentec_style','meta_compare'=>'EXISTS',
-        ]);
-        $queue = []; $repaired = 0;
-        foreach ((array)$ids as $product_id) {
-            $product_id = (int)$product_id;
-            $style = trim((string)get_post_meta($product_id,'_asss_momentec_style',true));
-            if ($style === '') continue;
-            $data = $this->momentec->style_product($style);
-            $variants = !is_wp_error($data) && is_array($data['variants'] ?? null) ? $data['variants'] : [];
-            $complete = !empty($variants);
-            foreach ($variants as $row) {
-                $w = is_array($row) ? ($row['weight_lb'] ?? null) : null;
-                if ($w === null || !is_numeric($w) || (float)$w <= 0) { $complete = false; break; }
-            }
-            if ($complete) {
-                $result = $this->update_momentec_style($product_id);
-                if (!is_wp_error($result)) $repaired++;
-            } else {
-                $queue[strtolower($style)] = $style;
-            }
-        }
-        $queued = 0;
-        if ($queue) {
-            $result = $this->momentec->queue_style_requests(array_values($queue), get_current_user_id(), true);
-            if (is_array($result)) $queued = (int)($result['queued'] ?? 0);
-        }
-        update_option('asss_v2022_momentec_weights_migrated','yes',false);
-        ASSS_Logger::log('v2.0.22 Momentec shipping-weight migration initialized','info',[
-            'products'=>count((array)$ids),'repaired_from_weighted_cache'=>$repaired,'styles_queued_for_github'=>$queued,
-        ]);
-    }
-
-'''
-          assert migration_marker in s
-          s=s.replace(migration_marker,migration+migration_marker,1)
-          imp.write_text(s)
-
-          # Version metadata.
-          main=root/'all-star-supplier-sync.php'
-          m=main.read_text().replace('Version: 2.0.21','Version: 2.0.22',1).replace("define('ASSS_VERSION', '2.0.21');","define('ASSS_VERSION', '2.0.22');",1)
-          main.write_text(m)
-
-          readme=root/'readme.txt'
-          r=readme.read_text().replace('Stable tag: 2.0.21','Stable tag: 2.0.22',1)
-          changelog='''= 2.0.22 =\n* Momentec shipping weight now comes from the official full product-data feed by exact Item_SKU; /v2/Style is retained for customer-specific pricing, inventory identity, and media.\n* Weight_Unit is normalized to pounds in GitHub (lb/oz/kg/g supported), with the heaviest known style weight used only as a conservative fallback when a specific feed row lacks weight.\n* WooCommerce Momentec variations now receive supplier-managed shipping weight, while merchant-edited weights remain protected. Parent products retain the maximum selected-variation weight as a safe fallback.\n* Momentec variation audits now include missing shipping weight as a critical coverage field. GitHub publishing refuses a hydrated style when no usable weight can be established.\n* Existing Momentec-linked products automatically queue fresh GitHub hydration when their cached style predates weight support; already-weighted caches repair immediately.\n\n'''
-          anchor='== Changelog ==\n\n'
-          assert anchor in r
-          r=r.replace(anchor,anchor+changelog,1)
-          readme.write_text(r)
-          PY
+      - name: Apply v2.0.22 patch
+        run: python release/.release-staging/v2.0.22/patch.py source
 
       - name: Validate source
         run: |
@@ -170,16 +35,17 @@ jobs:
           from pathlib import Path
           s=Path('source/includes/class-asss-importer.php').read_text()
           checks=[
-            "migrate_momentec_shipping_weights_v2022",
-            "apply_supplier_variation_weight",
-            "_asss_momentec_weight_lb",
-            "'missing_weight'=>$missing_weight",
-            "styles_queued_for_github",
-            "'weight_lb'=>$row['weight_lb'] ?? null",
+              'migrate_momentec_shipping_weights_v2022',
+              'apply_supplier_variation_weight',
+              '_asss_momentec_weight_lb',
+              "'missing_weight'=>$missing_weight",
+              'styles_queued_for_github',
+              "'weight_lb'=>$row['weight_lb'] ?? null",
           ]
-          for c in checks: assert c in s, c
-          assert "Version: 2.0.22" in Path('source/all-star-supplier-sync.php').read_text()
-          assert "Stable tag: 2.0.22" in Path('source/readme.txt').read_text()
+          for check in checks:
+              assert check in s, check
+          assert 'Version: 2.0.22' in Path('source/all-star-supplier-sync.php').read_text()
+          assert 'Stable tag: 2.0.22' in Path('source/readme.txt').read_text()
           print('v2.0.22 weight invariants passed')
           PY
 
@@ -189,26 +55,29 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git checkout -B recovery/v2.0.22-exact-source
-          git rm -rf . >/dev/null 2>&1 || true
-          cp -a ../source/. .
-          rm -rf .git
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          rsync -a --exclude='.git' ../source/ ./
           git add -A
-          git commit -m 'release: exact v2.0.22 source' || true
+          git commit -m 'release: exact v2.0.22 source'
           git push --force origin recovery/v2.0.22-exact-source
           git checkout main
 
-      - name: Publish release
+      - name: Build package
         run: |
-          rm -rf package && mkdir -p package/all-star-supplier-sync
-          cp -a source/. package/all-star-supplier-sync/
-          rm -rf package/all-star-supplier-sync/.git package/all-star-supplier-sync/.github
+          rm -rf package all-star-supplier-sync-2.0.22.zip
+          mkdir -p package/all-star-supplier-sync
+          rsync -a --exclude='.git' --exclude='.github' source/ package/all-star-supplier-sync/
           cd package
           zip -qr ../all-star-supplier-sync-2.0.22.zip all-star-supplier-sync
-          cd ..
-          SHA=$(sha256sum all-star-supplier-sync-2.0.22.zip | awk '{print $1}')
-          cd release
+
+      - name: Publish release
+        working-directory: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           git checkout main
           git pull --ff-only
+          SHA=$(sha256sum ../all-star-supplier-sync-2.0.22.zip | awk '{print $1}')
           cat > latest.json <<EOF
           {
             "version": "2.0.22",
@@ -221,8 +90,6 @@ jobs:
           git commit -m 'release: point updater to v2.0.22'
           git push
           gh release create v2.0.22 ../all-star-supplier-sync-2.0.22.zip --title 'All Star Supplier Sync v2.0.22' --notes "Momentec shipping-weight hardening: exact Item_SKU weights from official product feed, Woo variation weight assignment, missing-weight audit, and existing-product rehydration migration. SHA-256: ${SHA}"
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Cleanup temporary release tooling
         if: always()
@@ -233,5 +100,6 @@ jobs:
           git checkout main
           git pull --ff-only
           git rm -f .github/workflows/build-v2.0.22.yml || true
-          git commit -m 'maintenance: remove v2.0.22 build workflow' || true
+          git rm -f .release-staging/v2.0.22/patch.py || true
+          git commit -m 'maintenance: remove v2.0.22 build tooling' || true
           git push || true
