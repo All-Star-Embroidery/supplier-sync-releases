@@ -1,0 +1,204 @@
+name: Build Supplier Sync v2.0.23
+
+on:
+  push:
+    paths:
+      - '.github/workflows/build-v2.0.23.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact v2.0.22 source
+        uses: actions/checkout@v6
+        with:
+          ref: recovery/v2.0.22-exact-source
+          path: source
+
+      - name: Checkout release repository
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: release
+          fetch-depth: 0
+
+      - name: Patch canonical product title
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          root=Path('source')
+          p=root/'includes/class-asss-importer.php'
+          s=p.read_text()
+
+          old="        add_action('admin_init', [$this, 'migrate_momentec_shipping_weights_v2022'], 39);\n"
+          new=old+"        add_action('admin_init', [$this, 'migrate_canonical_product_titles_v2023'], 40);\n"
+          assert old in s
+          s=s.replace(old,new,1)
+
+          old="        add_action('asss_product_synced', [$this, 'normalize_product_storefront_sizes'], 45, 2);\n"
+          new="        add_action('asss_product_synced', [$this, 'normalize_canonical_product_title'], 42, 2);\n"+old
+          assert old in s
+          s=s.replace(old,new,1)
+
+          marker="    /**\n     * Canonicalize only equivalent one-size labels in WooCommerce. Supplier raw\n"
+          method=r'''    /**
+     * Canonical storefront titles for high-value/core products. Supplier titles
+     * are retained in supplier payload/meta, while Woo gets one stable customer-
+     * facing name regardless of which supplier created or refreshed the product.
+     */
+    private function canonical_product_title_for(int $product_id): string {
+        $sources = [
+            [trim((string)get_post_meta($product_id,'_asss_sanmar_brand',true)), trim((string)get_post_meta($product_id,'_asss_sanmar_style',true))],
+            [trim((string)get_post_meta($product_id,'_asss_ss_brand',true)), trim((string)get_post_meta($product_id,'_asss_ss_style',true))],
+            [trim((string)get_post_meta($product_id,'_asss_momentec_brand',true)), trim((string)get_post_meta($product_id,'_asss_momentec_style',true))],
+        ];
+        $rules = [
+            'richardson|112' => 'Snapback Trucker Cap (Richardson 112)',
+        ];
+        $rules = apply_filters('asss_canonical_product_titles', $rules, $product_id);
+        if (!is_array($rules)) return '';
+        foreach ($sources as [$brand,$style]) {
+            if ($brand === '' || $style === '') continue;
+            $brand_key = strtolower(preg_replace('/[^a-z0-9]+/i','', $brand));
+            $style_key = strtolower(preg_replace('/[^a-z0-9]+/i','', $style));
+            // Be tolerant of supplier brand labels such as "Richardson Cap".
+            if (str_contains($brand_key, 'richardson') && $style_key === '112') {
+                return sanitize_text_field((string)($rules['richardson|112'] ?? ''));
+            }
+            $exact_key = $brand_key . '|' . $style_key;
+            if (!empty($rules[$exact_key])) return sanitize_text_field((string)$rules[$exact_key]);
+        }
+        return '';
+    }
+
+    public function normalize_canonical_product_title(int $product_id, string $supplier = ''): void {
+        if ($product_id < 1) return;
+        $wanted = $this->canonical_product_title_for($product_id);
+        if ($wanted === '') return;
+        $product = wc_get_product($product_id);
+        if (!$product) return;
+        if ((string)$product->get_name('edit') === $wanted) return;
+        $before = (string)$product->get_name('edit');
+        $product->set_name($wanted);
+        $product->update_meta_data('_asss_canonical_title', $wanted);
+        $product->save();
+        ASSS_Logger::log('Applied canonical storefront product title', 'info', [
+            'product_id'=>$product_id,'supplier'=>$supplier,'before'=>$before,'after'=>$wanted,
+        ]);
+    }
+
+    /** v2.0.23: repair existing Richardson 112 products immediately after upgrade. */
+    public function migrate_canonical_product_titles_v2023(): void {
+        if (!current_user_can('manage_woocommerce')) return;
+        if ((string)get_option('asss_v2023_canonical_titles_migrated','') === 'yes') return;
+        $ids = get_posts([
+            'post_type'=>'product','post_status'=>'any','fields'=>'ids','posts_per_page'=>-1,'no_found_rows'=>true,
+            'meta_query'=>[
+                'relation'=>'OR',
+                ['key'=>'_asss_sanmar_style','value'=>'112','compare'=>'='],
+                ['key'=>'_asss_ss_style','value'=>'112','compare'=>'='],
+                ['key'=>'_asss_momentec_style','value'=>'112','compare'=>'='],
+            ],
+        ]);
+        $changed = 0;
+        foreach ((array)$ids as $product_id) {
+            $product_id=(int)$product_id;
+            $before=wc_get_product($product_id);
+            $before_name=$before ? (string)$before->get_name('edit') : '';
+            $this->normalize_canonical_product_title($product_id, 'migration');
+            $after=wc_get_product($product_id);
+            if ($after && $before_name !== (string)$after->get_name('edit')) $changed++;
+        }
+        update_option('asss_v2023_canonical_titles_migrated','yes',false);
+        ASSS_Logger::log('v2.0.23 canonical title migration complete','info',['candidates'=>count((array)$ids),'changed'=>$changed]);
+    }
+
+'''
+          assert marker in s
+          s=s.replace(marker,method+marker,1)
+          p.write_text(s)
+
+          main=root/'all-star-supplier-sync.php'
+          m=main.read_text().replace('Version: 2.0.22','Version: 2.0.23',1).replace("define('ASSS_VERSION', '2.0.22');","define('ASSS_VERSION', '2.0.23');",1)
+          main.write_text(m)
+
+          readme=root/'readme.txt'
+          r=readme.read_text().replace('Stable tag: 2.0.22','Stable tag: 2.0.23',1)
+          anchor='== Changelog ==\n\n'
+          entry='''= 2.0.23 =\n* Adds a shared canonical storefront-title layer for core products across SanMar, S&S, and Momentec links.\n* Richardson style 112 is always titled "Snapback Trucker Cap (Richardson 112)" in WooCommerce regardless of which supplier created or refreshed it.\n* Existing Richardson 112 products are repaired once after upgrade, and future supplier syncs preserve the canonical title.\n\n'''
+          assert anchor in r
+          r=r.replace(anchor,anchor+entry,1)
+          readme.write_text(r)
+          PY
+
+      - name: Validate source
+        run: |
+          find source -name '*.php' -print0 | xargs -0 -n1 php -l
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('source/includes/class-asss-importer.php').read_text()
+          for needle in [
+            "normalize_canonical_product_title",
+            "migrate_canonical_product_titles_v2023",
+            "Snapback Trucker Cap (Richardson 112)",
+            "_asss_sanmar_style",
+            "_asss_ss_style",
+            "_asss_momentec_style",
+            "asss_canonical_product_titles",
+          ]:
+              assert needle in s, needle
+          assert "Version: 2.0.23" in Path('source/all-star-supplier-sync.php').read_text()
+          assert "Stable tag: 2.0.23" in Path('source/readme.txt').read_text()
+          print('v2.0.23 canonical-title invariants passed')
+          PY
+
+      - name: Save exact v2.0.23 source branch
+        working-directory: release
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B recovery/v2.0.23-exact-source
+          git rm -rf . >/dev/null 2>&1 || true
+          cp -a ../source/. .
+          rm -rf .git
+          git add -A
+          git commit -m 'release: exact v2.0.23 source' || true
+          git push --force origin recovery/v2.0.23-exact-source
+          git checkout main
+
+      - name: Build and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf package && mkdir -p package/all-star-supplier-sync
+          cp -a source/. package/all-star-supplier-sync/
+          rm -rf package/all-star-supplier-sync/.git package/all-star-supplier-sync/.github
+          (cd package && zip -qr ../all-star-supplier-sync-2.0.23.zip all-star-supplier-sync)
+          SHA=$(sha256sum all-star-supplier-sync-2.0.23.zip | awk '{print $1}')
+          cd release
+          git checkout main
+          git pull --ff-only
+          cat > latest.json <<EOF
+          {
+            "version": "2.0.23",
+            "package": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/v2.0.23/all-star-supplier-sync-2.0.23.zip",
+            "url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/tag/v2.0.23",
+            "name": "All Star Supplier Sync v2.0.23"
+          }
+          EOF
+          git add latest.json
+          git commit -m 'release: point updater to v2.0.23'
+          git push
+          gh release create v2.0.23 ../all-star-supplier-sync-2.0.23.zip --title 'All Star Supplier Sync v2.0.23' --notes "Canonical Richardson 112 storefront title across supplier imports and refreshes. SHA-256: $SHA"
+
+      - name: Cleanup temporary workflow
+        if: success()
+        working-directory: release
+        run: |
+          git pull --ff-only
+          git rm .github/workflows/build-v2.0.23.yml
+          git commit -m 'maintenance: remove temporary v2.0.23 builder'
+          git push
