@@ -60,8 +60,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git checkout -B recovery/v2.0.23-exact-source
           git rm -rf . >/dev/null 2>&1 || true
-          cp -a ../source/. .
-          rm -rf .git
+          rsync -a --exclude='.git' ../source/ ./
           git add -A
           git commit -m 'release: exact v2.0.23 source' || true
           git push --force origin recovery/v2.0.23-exact-source
@@ -72,8 +71,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           rm -rf package && mkdir -p package/all-star-supplier-sync
-          cp -a source/. package/all-star-supplier-sync/
-          rm -rf package/all-star-supplier-sync/.git package/all-star-supplier-sync/.github
+          rsync -a --exclude='.git' --exclude='.github' source/ package/all-star-supplier-sync/
           (cd package && zip -qr ../all-star-supplier-sync-2.0.23.zip all-star-supplier-sync)
           SHA=$(sha256sum all-star-supplier-sync-2.0.23.zip | awk '{print $1}')
           cd release
