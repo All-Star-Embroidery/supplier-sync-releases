@@ -1,0 +1,104 @@
+name: Build Supplier Sync v2.0.25
+
+on:
+  push:
+    paths:
+      - '.github/workflows/build-v2.0.25.yml'
+      - '.release-tools/build_v2025.py'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact v2.0.24 source
+        uses: actions/checkout@v6
+        with:
+          ref: recovery/v2.0.24-exact-source
+          path: source
+
+      - name: Checkout release repository
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: release
+          fetch-depth: 0
+
+      - name: Apply v2.0.25 patch
+        run: python3 release/.release-tools/build_v2025.py
+
+      - name: Validate source
+        run: |
+          find source -name '*.php' -print0 | xargs -0 -n1 php -l
+          python3 - <<'PY'
+          from pathlib import Path
+          main=Path('source/all-star-supplier-sync.php').read_text()
+          readme=Path('source/readme.txt').read_text()
+          importer=Path('source/includes/class-asss-importer.php').read_text()
+          sanmar=Path('source/includes/class-asss-sanmar.php').read_text()
+          bridge=Path('source/includes/class-asss-bridge.php').read_text()
+          assert 'Version: 2.0.25' in main
+          assert "define('ASSS_VERSION', '2.0.25');" in main
+          assert 'Stable tag: 2.0.25' in readme
+          for needle in [
+              'migrate_sanmar_gallery_images_v2025',
+              'queue_sanmar_product_gallery_normalization',
+              "'gallery'",
+              "queue_storefront_image_request($product_id, $brand, $style, $url, 'sanmar-square-v1', 'gallery')",
+          ]: assert needle in importer, needle
+          for needle in ["string $role='featured'", "'role'=>$role", '2000']:
+              assert needle in sanmar, needle
+          for needle in ["$role = sanitize_key((string)($queued['role'] ?? 'featured'))", '_asss_sanmar_gallery_normalized_at', "'role'=>$role"]:
+              assert needle in bridge, needle
+          assert "posts_per_page'=>10" in importer
+          print('v2.0.25 gallery normalization invariants passed')
+          PY
+
+      - name: Save exact v2.0.25 source branch
+        working-directory: release
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B recovery/v2.0.25-exact-source
+          git rm -rf . >/dev/null 2>&1 || true
+          rsync -a --exclude='.git' ../source/ ./
+          git add -A
+          git commit -m 'release: exact v2.0.25 source'
+          git push --force origin recovery/v2.0.25-exact-source
+          git checkout main
+
+      - name: Build and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf package && mkdir -p package/all-star-supplier-sync
+          rsync -a --exclude='.git' --exclude='.github' source/ package/all-star-supplier-sync/
+          (cd package && zip -qr ../all-star-supplier-sync-2.0.25.zip all-star-supplier-sync)
+          SHA=$(sha256sum all-star-supplier-sync-2.0.25.zip | awk '{print $1}')
+          cd release
+          git checkout main
+          git pull --ff-only
+          cat > latest.json <<EOF
+          {
+            "version": "2.0.25",
+            "package": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/v2.0.25/all-star-supplier-sync-2.0.25.zip",
+            "url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/tag/v2.0.25",
+            "name": "All Star Supplier Sync v2.0.25"
+          }
+          EOF
+          git add latest.json
+          git commit -m 'release: point updater to v2.0.25'
+          git push
+          gh release create v2.0.25 ../all-star-supplier-sync-2.0.25.zip --title 'All Star Supplier Sync v2.0.25' --notes "Extends GitHub-side SanMar image normalization to Supplier Sync-owned parent product gallery images while preserving manual media and keeping inventory sync image-free. SHA-256: $SHA"
+          echo "RELEASE_SHA256=$SHA"
+
+      - name: Cleanup temporary release tooling
+        if: success()
+        working-directory: release
+        run: |
+          git pull --ff-only
+          git rm .github/workflows/build-v2.0.25.yml .release-tools/build_v2025.py
+          git commit -m 'maintenance: remove temporary v2.0.25 build tooling'
+          git push
