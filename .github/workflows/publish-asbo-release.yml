@@ -7,10 +7,6 @@ on:
         description: "ASBO version to publish, e.g. 1.1.1"
         required: true
         type: string
-  pull_request:
-    types: [closed]
-    paths:
-      - 'asbo/.publish-trigger'
   issues:
     types: [opened]
 
@@ -21,7 +17,6 @@ jobs:
   publish:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && github.event.pull_request.merged == true) ||
       (github.event_name == 'issues' && startsWith(github.event.issue.title, 'PUBLISH ASBO '))
     runs-on: ubuntu-latest
     steps:
@@ -38,17 +33,23 @@ jobs:
           set -euo pipefail
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             VERSION="${{ inputs.version }}"
-          elif [[ "${{ github.event_name }}" == "issues" ]]; then
+          else
             VERSION="${{ github.event.issue.title }}"
             VERSION="${VERSION#PUBLISH ASBO }"
-          else
-            VERSION="1.1.1"
           fi
-          ZIP="asbo/all-star-bulk-order-block-${VERSION}.zip"
-          test -f "$ZIP"
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]
+          ZIP="asbo/all-star-bulk-order-block-${VERSION}.zip"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Restore exact validated v1.1.1 archive
+        if: steps.pkg.outputs.version == '1.1.1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .release-staging/asbo-v1.1.1/part*.b64 | tr -d '\r\n' | base64 --decode > "${{ steps.pkg.outputs.zip }}"
+          echo '67154e4eef8ad03f9efab151097a402e0a154201d12c9d05148128999cbf17d1  asbo/all-star-bulk-order-block-1.1.1.zip' | sha256sum --check
+          test "$(stat -c%s asbo/all-star-bulk-order-block-1.1.1.zip)" = '33903'
 
       - name: Validate WordPress plugin ZIP
         shell: bash
@@ -78,7 +79,7 @@ jobs:
               --notes-file "asbo/RELEASE-${VERSION}.md"
           fi
 
-      - name: Point WordPress updater to release asset
+      - name: Commit repaired repository package and manifest
         shell: bash
         run: |
           set -euo pipefail
@@ -94,6 +95,6 @@ jobs:
           PY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add asbo/latest.json
-          git commit -m "fix: serve ASBO $VERSION from GitHub Release asset" || exit 0
+          git add "${{ steps.pkg.outputs.zip }}" asbo/latest.json
+          git commit -m "fix: repair ASBO $VERSION package and release URL" || exit 0
           git push
