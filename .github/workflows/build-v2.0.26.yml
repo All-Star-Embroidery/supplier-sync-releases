@@ -1,0 +1,103 @@
+name: Build Supplier Sync v2.0.26
+
+on:
+  push:
+    paths:
+      - '.github/workflows/build-v2.0.26.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact v2.0.25 source
+        uses: actions/checkout@v6
+        with:
+          ref: recovery/v2.0.25-exact-source
+          path: source
+
+      - name: Checkout release repository
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: release
+          fetch-depth: 0
+
+      - name: Apply v2.0.26 patch
+        run: python3 release/.release-tools/build_v2026.py
+
+      - name: Validate source
+        run: |
+          find source -name '*.php' -print0 | xargs -0 -n1 php -l
+          python3 - <<'PY'
+          from pathlib import Path
+          plugin=Path('source/all-star-supplier-sync.php').read_text()
+          readme=Path('source/readme.txt').read_text()
+          importer=Path('source/includes/class-asss-importer.php').read_text()
+          multi=Path('source/includes/class-asss-multi.php').read_text()
+          sanmar=Path('source/includes/class-asss-sanmar.php').read_text()
+          checks = [
+              ('version', 'Version: 2.0.26' in plugin and "ASSS_VERSION', '2.0.26" in plugin),
+              ('stable', 'Stable tag: 2.0.26' in readme),
+              ('sanmar_unit', "['UNIT_BUY_PRICE','PIECE_PRICE','PRICE']" in importer),
+              ('ss_unit', "supplier_markup:ss:unit-buy" in importer),
+              ('momentec_unit', "supplier_markup:momentec:unit-buy" in importer),
+              ('no_ss_retail_fallback', 'ss_retail_fallback' not in importer),
+              ('no_momentec_retail_fallback', 'momentec_retail_fallback' not in importer),
+              ('no_sanmar_map_fallback', 'map_fallback:sanmar' not in importer and 'map-row-deep-repair' not in importer),
+              ('source_schema', 'normalize_pricing_source' in multi and "'unit_buy_price'" in multi and "'price_breaks'" in multi),
+              ('migration', 'migrate_standard_supplier_pricing_v2026' in importer),
+              ('bridge', "'UNIT_BUY_PRICE'" in sanmar and "'PRICE_BREAKS'" in sanmar and "'SUGGESTED_PRICE'" in sanmar),
+          ]
+          bad=[name for name,ok in checks if not ok]
+          if bad: raise SystemExit('FAILED invariants: '+', '.join(bad))
+          print('v2.0.26 pricing invariants passed')
+          PY
+
+      - name: Save exact v2.0.26 source branch
+        working-directory: release
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B recovery/v2.0.26-exact-source
+          git rm -rf . >/dev/null 2>&1 || true
+          rsync -a --exclude='.git' ../source/ ./
+          git add -A
+          git commit -m 'release: exact v2.0.26 source'
+          git push --force origin recovery/v2.0.26-exact-source
+          git checkout main
+
+      - name: Build and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf package && mkdir -p package/all-star-supplier-sync
+          rsync -a --exclude='.git' --exclude='.github' source/ package/all-star-supplier-sync/
+          (cd package && zip -qr ../all-star-supplier-sync-2.0.26.zip all-star-supplier-sync)
+          SHA=$(sha256sum all-star-supplier-sync-2.0.26.zip | awk '{print $1}')
+          cd release
+          git checkout main
+          git pull --ff-only
+          cat > latest.json <<EOF
+          {
+            "version": "2.0.26",
+            "package": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/v2.0.26/all-star-supplier-sync-2.0.26.zip",
+            "url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/tag/v2.0.26",
+            "name": "All Star Supplier Sync v2.0.26"
+          }
+          EOF
+          git add latest.json
+          git commit -m 'release: point updater to v2.0.26'
+          git push
+          gh release create v2.0.26 ../all-star-supplier-sync-2.0.26.zip --title 'All Star Supplier Sync v2.0.26' --notes "Standardizes supplier pricing around the verified 1-unit/account buy cost. Woo regular price = unit buy cost + \$20. MAP/MSRP/suggested retail remain reference-only. Supplier piece/dozen/case cost breaks are preserved for margin analysis and future ASBO use. Existing Supplier Sync-managed prices and matrices are repaired without overriding merchant-owned pricing. SHA-256: $SHA"
+          echo "RELEASE_SHA256=$SHA"
+
+      - name: Cleanup temporary release tooling
+        working-directory: release
+        run: |
+          git pull --ff-only
+          git rm .github/workflows/build-v2.0.26.yml .release-tools/build_v2026.py
+          git commit -m 'maintenance: remove temporary v2.0.26 build tooling'
+          git push
