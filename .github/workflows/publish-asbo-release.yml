@@ -39,15 +39,26 @@ jobs:
           fi
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]
           ZIP="asbo/all-star-bulk-order-block-${VERSION}.zip"
-          test -f "$ZIP"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Restore exact validated v1.1.2 archive
+        if: steps.pkg.outputs.version == '1.1.2'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="${{ steps.pkg.outputs.zip }}"
+          mkdir -p "$(dirname "$ZIP")"
+          cat .release-staging/asbo-v1.1.2/part*.b64 | tr -d '\r\n' | base64 --decode > "$ZIP"
+          echo '27afc6d7c825b0951278f52afd1daa645f0f4807051e9e3ee9831754b6f3cb06  asbo/all-star-bulk-order-block-1.1.2.zip' | sha256sum --check
+          test "$(stat -c%s asbo/all-star-bulk-order-block-1.1.2.zip)" = '36356'
 
       - name: Validate WordPress plugin ZIP
         shell: bash
         run: |
           set -euo pipefail
           ZIP="${{ steps.pkg.outputs.zip }}"
+          test -f "$ZIP"
           unzip -t "$ZIP" >/dev/null
           unzip -l "$ZIP" | grep -q 'all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php'
 
