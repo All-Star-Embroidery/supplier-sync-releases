@@ -2,7 +2,7 @@
   "name": "All Star Bulk Order Block",
   "slug": "all-star-bulk-order-block",
   "version": "1.1.1",
-  "download_url": "https://raw.githubusercontent.com/rolejarczyk/ASE.SupplierSync-Releases/main/asbo/all-star-bulk-order-block-1.1.1.zip",
+  "download_url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/asbo-v1.1.1/all-star-bulk-order-block-1.1.1.zip",
   "homepage": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/tree/main/asbo",
   "requires": "6.5",
   "tested": "6.8",
