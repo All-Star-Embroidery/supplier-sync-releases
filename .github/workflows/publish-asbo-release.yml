@@ -60,6 +60,17 @@ jobs:
           echo '27afc6d7c825b0951278f52afd1daa645f0f4807051e9e3ee9831754b6f3cb06  asbo/all-star-bulk-order-block-1.1.2.zip' | sha256sum --check
           test "$(stat -c%s asbo/all-star-bulk-order-block-1.1.2.zip)" = '36356'
 
+      - name: Restore exact validated v1.1.3 archive
+        if: steps.pkg.outputs.version == '1.1.3'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="${{ steps.pkg.outputs.zip }}"
+          mkdir -p "$(dirname "$ZIP")"
+          cat .release-staging/asbo-v1.1.3/part*.b64 | tr -d '\r\n' | base64 --decode > "$ZIP"
+          echo '0d2e74df48eb11124c12d300305ecf9fef9f5aacb4588a00a89b77d6361ce16a  asbo/all-star-bulk-order-block-1.1.3.zip' | sha256sum --check
+          test "$(stat -c%s asbo/all-star-bulk-order-block-1.1.3.zip)" = '40675'
+
       - name: Validate WordPress plugin ZIP
         shell: bash
         run: |
