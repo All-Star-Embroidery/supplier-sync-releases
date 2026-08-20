@@ -7,21 +7,23 @@ on:
         description: "ASBO version to publish, e.g. 1.1.1"
         required: true
         type: string
-  push:
+  pull_request:
+    types: [closed]
     paths:
-      - '.github/workflows/publish-asbo-release.yml'
-      - 'asbo/all-star-bulk-order-block-*.zip'
+      - 'asbo/.publish-trigger'
 
 permissions:
   contents: write
 
 jobs:
   publish:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout release repository
         uses: actions/checkout@v5
         with:
+          ref: main
           fetch-depth: 2
 
       - name: Resolve package and version
@@ -63,7 +65,7 @@ jobs:
             gh release upload "$TAG" "$ASSET" --clobber
           else
             gh release create "$TAG" "$ASSET" \
-              --target "$GITHUB_SHA" \
+              --target main \
               --title "All Star Bulk Order Block v${VERSION}" \
               --notes-file "asbo/RELEASE-${VERSION}.md"
           fi
