@@ -1,9 +1,7 @@
-# ASBO Releases
+# All Star Bulk Order Block releases
 
-Current release: **v1.1.1**
+WordPress updater packages for the All Star Bulk Order Block.
 
-WordPress update manifest: `latest.json`
+Current release: **v1.1.3**
 
-Current package: `all-star-bulk-order-block-1.1.1.zip`
-
-See `RELEASE-1.1.1.md` for the mobile UX change log and validation notes.
+The live updater manifest is `asbo/latest.json`; installable packages are published as GitHub Release assets after ZIP validation.
