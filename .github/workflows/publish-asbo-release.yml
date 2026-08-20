@@ -9,6 +9,10 @@ on:
         type: string
   issues:
     types: [opened]
+  pull_request:
+    types: [closed]
+    paths:
+      - 'asbo/.publish-trigger'
 
 permissions:
   contents: write
@@ -17,7 +21,8 @@ jobs:
   publish:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issues' && startsWith(github.event.issue.title, 'PUBLISH ASBO '))
+      (github.event_name == 'issues' && startsWith(github.event.issue.title, 'PUBLISH ASBO ')) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout release repository
@@ -33,9 +38,11 @@ jobs:
           set -euo pipefail
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             VERSION="${{ inputs.version }}"
-          else
+          elif [[ "${{ github.event_name }}" == "issues" ]]; then
             VERSION="${{ github.event.issue.title }}"
             VERSION="${VERSION#PUBLISH ASBO }"
+          else
+            VERSION="1.1.2"
           fi
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]
           ZIP="asbo/all-star-bulk-order-block-${VERSION}.zip"
