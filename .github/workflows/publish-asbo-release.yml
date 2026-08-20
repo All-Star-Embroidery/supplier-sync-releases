@@ -67,3 +67,23 @@ jobs:
               --title "All Star Bulk Order Block v${VERSION}" \
               --notes-file "asbo/RELEASE-${VERSION}.md"
           fi
+
+      - name: Point WordPress updater to release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.pkg.outputs.version }}"
+          python3 - <<PY
+          import json
+          from pathlib import Path
+          p=Path('asbo/latest.json')
+          data=json.loads(p.read_text())
+          data['version']='$VERSION'
+          data['download_url']=f'https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/asbo-v$VERSION/all-star-bulk-order-block-$VERSION.zip'
+          p.write_text(json.dumps(data, indent=2) + '\n')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add asbo/latest.json
+          git commit -m "fix: serve ASBO $VERSION from GitHub Release asset" || exit 0
+          git push
