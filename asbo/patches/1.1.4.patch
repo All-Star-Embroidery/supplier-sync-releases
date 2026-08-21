@@ -1,0 +1,222 @@
+--- a/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php
++++ b/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php
+@@ -2,7 +2,7 @@
+ /**
+  * Plugin Name: All Star Bulk Order Block
+  * Description: Gutenberg block version of the All Star Embroidery bulk-order workflow.
+- * Version: 1.1.3
++ * Version: 1.1.4
+  * Update URI: https://github.com/rolejarczyk/ASE.SupplierSync-Releases/tree/main/asbo
+  * Author: All Star Embroidery
+  * Requires Plugins: woocommerce
+@@ -14,7 +14,7 @@
+ }
+ 
+ final class ASBO_Plugin {
+-    private const VERSION = '1.1.3';
++    private const VERSION = '1.1.4';
+     private const META_ENABLED = '_asbo_enabled';
+     private const META_DISPLAY_NAME = '_asbo_display_name';
+     private const META_DESCRIPTION = '_asbo_short_description';
+@@ -389,8 +389,11 @@
+ 
+     /**
+      * Pricing format:
+-     * Embroidery|1:32,12:27,24:24
+-     * Patch|1:35,12:30,24:27
++     * Embroidery|6:30,12:27,24:24
++     * Patch|6:33,12:30,24:27
++     *
++     * WooCommerce Regular Price is authoritative at 1+. Any legacy matrix 1: entry
++     * is retained in product metadata for compatibility but ignored by ASBO pricing.
+      *
+      * @return array<string,array<int,float>>
+      */
+@@ -447,6 +450,12 @@
+         $selected = null;
+ 
+         foreach ( $tiers as $minimum => $price ) {
++            // WooCommerce Regular Price is the authoritative 1+ storefront price.
++            // Legacy 1: entries in the ASBO matrix are intentionally ignored.
++            if ( (int) $minimum <= 1 ) {
++                continue;
++            }
++
+             if ( $quantity >= (int) $minimum ) {
+                 $selected = (float) $price;
+             }
+@@ -1127,10 +1136,11 @@
+                                         <?php foreach ( $thresholds as $threshold ) : ?>
+                                             <td data-threshold="<?php echo esc_attr( $threshold ); ?>">
+                                                 <?php
+-                                                if ( isset( $tiers[ $threshold ] ) ) {
+-                                                    echo wp_kses_post( wc_price( $tiers[ $threshold ] ) );
+-                                                } elseif ( 1 === (int) $threshold ) {
++                                                if ( 1 === (int) $threshold ) {
++                                                    // 1+ is always the WooCommerce Regular Price.
+                                                     echo wp_kses_post( $base_price_display );
++                                                } elseif ( isset( $tiers[ $threshold ] ) ) {
++                                                    echo wp_kses_post( wc_price( $tiers[ $threshold ] ) );
+                                                 } else {
+                                                     echo '—';
+                                                 }
+@@ -1263,8 +1273,8 @@
+                     'variation_id' => $variation->get_id(),
+                     'label'        => $parts ? implode( ' / ', $parts ) : $variation->get_name(),
+                     'image'        => $variation_image_id ? wp_get_attachment_image_url( $variation_image_id, 'woocommerce_thumbnail' ) : wc_placeholder_img_src( 'woocommerce_thumbnail' ),
+-                    'purchasable'  => $variation->is_purchasable() && $variation->is_in_stock(),
+-                    'base_price'   => '' !== (string) $variation->get_price() ? (float) $variation->get_price() : null,
++                    'purchasable'  => '' !== (string) $variation->get_regular_price( 'edit' ) && $variation->is_purchasable() && $variation->is_in_stock(),
++                    'base_price'   => '' !== (string) $variation->get_regular_price( 'edit' ) ? (float) $variation->get_regular_price( 'edit' ) : null,
+                 );
+             }
+         } else {
+@@ -1273,8 +1283,8 @@
+                 'variation_id' => 0,
+                 'label'        => __( 'Standard', 'all-star-bulk-order' ),
+                 'image'        => $image_id ? wp_get_attachment_image_url( $image_id, 'woocommerce_thumbnail' ) : wc_placeholder_img_src( 'woocommerce_thumbnail' ),
+-                'purchasable'  => $product->is_purchasable() && $product->is_in_stock(),
+-                'base_price'   => '' !== (string) $product->get_price() ? (float) $product->get_price() : null,
++                'purchasable'  => '' !== (string) $product->get_regular_price( 'edit' ) && $product->is_purchasable() && $product->is_in_stock(),
++                'base_price'   => '' !== (string) $product->get_regular_price( 'edit' ) ? (float) $product->get_regular_price( 'edit' ) : null,
+             );
+         }
+ 
+@@ -1373,7 +1383,7 @@
+                 continue;
+             }
+ 
+-            $base_price_raw = (string) $sellable_product->get_price();
++            $base_price_raw = (string) $sellable_product->get_regular_price( 'edit' );
+             $base_unit_price = '' !== $base_price_raw ? (float) $base_price_raw : null;
+ 
+             $normalized[] = array(
+@@ -1412,15 +1422,21 @@
+                 : null;
+ 
+             // Quantities below the first configured bulk break use the product's
+-            // normal WooCommerce selling price. This makes 1–5 pieces valid and
+-            // keeps Supplier Sync as the source of truth for the base price.
++            // WooCommerce Regular Price. Supplier Sync owns that storefront base price;
++            // ASBO never derives it from supplier cost, MAP, MSRP, list price, or price_breaks.
+             if ( null === $unit_price ) {
+                 $unit_price = $item['base_unit_price'];
+             }
+ 
+             if ( null === $unit_price ) {
+                 wp_send_json_error(
+-                    array( 'message' => sprintf( __( '%s is missing its normal WooCommerce price. Run Supplier Sync → Quick Repair, then retry.', 'all-star-bulk-order' ), self::display_name( $product ) ) ),
++                    array(
++                        'message' => self::cart_validation_message(
++                            $product,
++                            $item['variation_label'],
++                            __( 'is missing its WooCommerce Regular Price. Run Supplier Sync → Quick Repair, then retry.', 'all-star-bulk-order' )
++                        ),
++                    ),
+                     409
+                 );
+             }
+@@ -1431,29 +1447,13 @@
+         $order_group = wp_generate_uuid4();
+         $added       = array();
+ 
+-        // ASBO supplies the decorated selling price. Supplier Sync normally writes a
+-        // Woo base price, but older/imported supplier variations may temporarily have
+-        // a blank Woo price. Allow only the already-validated ASBO lines through
+-        // WooCommerce's purchasable gate; stock and variation validation still apply.
+-        $allowed_product_ids = array();
+-        foreach ( $normalized as $item ) {
+-            $allowed_product_ids[] = $item['variation_id'] ?: $item['product_id'];
+-        }
+-        $allowed_product_ids = array_values( array_unique( array_map( 'absint', $allowed_product_ids ) ) );
+-
+-        $purchasable_filter = static function ( bool $purchasable, WC_Product $candidate ) use ( $allowed_product_ids ): bool {
+-            return in_array( $candidate->get_id(), $allowed_product_ids, true ) ? true : $purchasable;
+-        };
+-
+-        add_filter( 'woocommerce_is_purchasable', $purchasable_filter, 999, 2 );
+-        add_filter( 'woocommerce_variation_is_purchasable', $purchasable_filter, 999, 2 );
++        // Supplier Sync guarantees a valid WooCommerce Regular Price. ASBO no longer
++        // bypasses WooCommerce purchasability checks when that source-of-truth price is missing.
+ 
+         foreach ( $normalized as $item ) {
+             $product = wc_get_product( $item['product_id'] );
+             if ( ! $product ) {
+                 self::rollback_added_cart_items( $added );
+-                remove_filter( 'woocommerce_is_purchasable', $purchasable_filter, 999 );
+-                remove_filter( 'woocommerce_variation_is_purchasable', $purchasable_filter, 999 );
+                 wp_send_json_error( array( 'message' => __( 'A selected product changed during checkout preparation. Refresh and try again.', 'all-star-bulk-order' ) ), 409 );
+             }
+ 
+@@ -1484,8 +1484,6 @@
+                 $reason       = self::notice_text( $new_notices );
+ 
+                 self::rollback_added_cart_items( $added );
+-                remove_filter( 'woocommerce_is_purchasable', $purchasable_filter, 999 );
+-                remove_filter( 'woocommerce_variation_is_purchasable', $purchasable_filter, 999 );
+ 
+                 if ( '' === $reason ) {
+                     $reason = __( 'WooCommerce rejected this variation. Run Supplier Sync → Quick Repair for this product, then retry.', 'all-star-bulk-order' );
+@@ -1502,9 +1500,6 @@
+             $added[] = $cart_key;
+         }
+ 
+-        remove_filter( 'woocommerce_is_purchasable', $purchasable_filter, 999 );
+-        remove_filter( 'woocommerce_variation_is_purchasable', $purchasable_filter, 999 );
+-
+         $notes = isset( $_POST['artworkNotes'] )
+             ? sanitize_textarea_field( wp_unslash( $_POST['artworkNotes'] ) )
+             : '';
+@@ -1625,8 +1620,8 @@
+                     continue;
+                 }
+ 
+-                // Below the first bulk threshold, preserve each variation's normal
+-                // WooCommerce price rather than forcing the first bulk break.
++                // Below the first bulk threshold, preserve each variation's authoritative
++                // WooCommerce Regular Price rather than forcing a matrix 1+ value.
+                 if ( isset( $cart->cart_contents[ $cart_key ]['asbo']['base_unit_price'] )
+                     && null !== $cart->cart_contents[ $cart_key ]['asbo']['base_unit_price'] ) {
+                     $cart->cart_contents[ $cart_key ]['data']->set_price( (float) $cart->cart_contents[ $cart_key ]['asbo']['base_unit_price'] );
+@@ -4033,7 +4028,7 @@
+     const getTier = (tiers, quantity) => {
+       const thresholds = Object.keys(tiers || {})
+         .map(Number)
+-        .filter((n) => Number.isFinite(n))
++        .filter((n) => Number.isFinite(n) && n > 1)
+         .sort((a, b) => a - b);
+ 
+       let chosen = null;
+--- a/all-star-bulk-order-block-v1.0.0/block/block.json
++++ b/all-star-bulk-order-block-v1.0.0/block/block.json
+@@ -2,7 +2,7 @@
+   "$schema": "https://schemas.wp.org/trunk/block.json",
+   "apiVersion": 3,
+   "name": "all-star/bulk-order",
+-  "version": "1.1.3",
++  "version": "1.1.4",
+   "title": "All Star Bulk Order",
+   "category": "widgets",
+   "icon": "products",
+--- a/all-star-bulk-order-block-v1.0.0/README.txt
++++ b/all-star-bulk-order-block-v1.0.0/README.txt
+@@ -1,4 +1,4 @@
+-All Star Bulk Order Block v1.1.3
++All Star Bulk Order Block v1.1.4
+ 
+ GitHub-managed production release for All Star Embroidery.
+ 
+@@ -41,3 +41,13 @@
+ - Adds one-time 30-second inactivity arrow cue above the current sticky Continue action.
+ - Reworks Artwork step into two visually guided tasks with clearer selected-state color.
+ - Logged-in customers can select from their recent WooCommerce orders when reusing approved artwork; guests retain manual reference entry.
++
++
++v1.1.4 pricing integrity with Supplier Sync 2.0.26+:
++- WooCommerce Regular Price is the authoritative customer-facing 1+ price.
++- Legacy 1: entries in _asbo_pricing_matrix are ignored; established bulk tiers above 1 are unchanged.
++- ASBO never derives customer pricing from unit_buy_price, supplier price_breaks, MAP, MSRP, suggested retail, or list price.
++- Total Saved uses Woo Regular Price as the normal-price baseline.
++- Checkout now fails clearly when a selected item is missing Woo Regular Price and directs admins to Supplier Sync Quick Repair.
++- Removed the old purchasability bypass for blank supplier variation prices now that Supplier Sync standardizes Woo Regular Price.
++- Supplier price_breaks remain private and are never rendered by ASBO; only the customer-facing ASBO pricing matrix is displayed.
