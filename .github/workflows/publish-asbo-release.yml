@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "ASBO version to publish, e.g. 1.1.3"
+        description: "ASBO version to publish, e.g. 1.1.4"
         required: true
         type: string
   issues:
@@ -42,7 +42,7 @@ jobs:
             VERSION="${{ github.event.issue.title }}"
             VERSION="${VERSION#PUBLISH ASBO }"
           else
-            VERSION="1.1.3"
+            VERSION="1.1.4"
           fi
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]
           ZIP="asbo/all-star-bulk-order-block-${VERSION}.zip"
@@ -70,6 +70,51 @@ jobs:
           cat .release-staging/asbo-v1.1.3/part*.b64 | tr -d '\r\n' | base64 --decode > "$ZIP"
           echo '0d2e74df48eb11124c12d300305ecf9fef9f5aacb4588a00a89b77d6361ce16a  asbo/all-star-bulk-order-block-1.1.3.zip' | sha256sum --check
           test "$(stat -c%s asbo/all-star-bulk-order-block-1.1.3.zip)" = '40675'
+
+      - name: Build validated v1.1.4 from v1.1.3
+        if: steps.pkg.outputs.version == '1.1.4'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="${{ steps.pkg.outputs.zip }}"
+          BASE='/tmp/asbo-v1.1.3.zip'
+          WORK='/tmp/asbo-v1.1.4'
+
+          cat .release-staging/asbo-v1.1.3/part*.b64 | tr -d '\r\n' | base64 --decode > "$BASE"
+          echo '0d2e74df48eb11124c12d300305ecf9fef9f5aacb4588a00a89b77d6361ce16a  /tmp/asbo-v1.1.3.zip' | sha256sum --check
+
+          rm -rf "$WORK"
+          mkdir -p "$WORK"
+          unzip -q "$BASE" -d "$WORK"
+          (
+            cd "$WORK"
+            patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.4.patch"
+          )
+
+          php -l "$WORK/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php"
+          node --check "$WORK/all-star-bulk-order-block-v1.0.0/block/editor.js"
+          python3 -m json.tool "$WORK/all-star-bulk-order-block-v1.0.0/block/block.json" >/dev/null
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/asbo-v1.1.4/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php')
+          s = p.read_text()
+          marker = "        return <<<'JS'\n"
+          start = s.index(marker, s.index('private static function inline_js')) + len(marker)
+          end = s.index('\nJS;', start)
+          Path('/tmp/asbo-v1.1.4-inline.js').write_text(s[start:end])
+          PY
+          node --check /tmp/asbo-v1.1.4-inline.js
+
+          echo '05ae6d0d79d156e7f788f9b89d771d8ceedaedfb2bdadc4d4b6a4b1495607f18  /tmp/asbo-v1.1.4/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php' | sha256sum --check
+          echo 'b17476a725f3f6610cd1d3064607ef08a0402931ea4c0c6da23c6dbef5991d60  /tmp/asbo-v1.1.4/all-star-bulk-order-block-v1.0.0/block/block.json' | sha256sum --check
+          echo '7cfe72a41880c8ec1f6ca8dfeffc74284fdf2665d47bf2aa124d6e0d6c9c070d  /tmp/asbo-v1.1.4/all-star-bulk-order-block-v1.0.0/README.txt' | sha256sum --check
+
+          mkdir -p "$(dirname "$ZIP")"
+          (
+            cd "$WORK"
+            zip -qr "$GITHUB_WORKSPACE/$ZIP" all-star-bulk-order-block-v1.0.0
+          )
 
       - name: Validate WordPress plugin ZIP
         shell: bash
@@ -107,11 +152,15 @@ jobs:
           VERSION="${{ steps.pkg.outputs.version }}"
           python3 - <<PY
           import json
+          from datetime import datetime, timezone
           from pathlib import Path
           p=Path('asbo/latest.json')
           data=json.loads(p.read_text())
           data['version']='$VERSION'
           data['download_url']=f'https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/asbo-v$VERSION/all-star-bulk-order-block-$VERSION.zip'
+          data['last_updated']=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
+          if '$VERSION' == '1.1.4':
+              data['changelog']='<h4>1.1.4</h4><ul><li>WooCommerce Regular Price is now the authoritative customer-facing 1+ price.</li><li>Legacy 1: ASBO matrix entries are ignored; all established bulk tiers above 1 remain unchanged.</li><li>Total Saved uses Woo Regular Price as its normal-price baseline.</li><li>ASBO does not read or expose unit_buy_price, supplier price_breaks, MAP, MSRP, suggested retail, or list prices.</li><li>Missing Woo Regular Price now fails clearly and directs admins to Supplier Sync Quick Repair.</li><li>Removed the legacy blank-price purchasability bypass.</li></ul>'
           p.write_text(json.dumps(data, indent=2) + '\n')
           PY
           git config user.name 'github-actions[bot]'
