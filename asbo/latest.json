@@ -1,13 +1,13 @@
 {
   "name": "All Star Bulk Order Block",
   "slug": "all-star-bulk-order-block",
-  "version": "1.1.3",
-  "download_url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/asbo-v1.1.3/all-star-bulk-order-block-1.1.3.zip",
+  "version": "1.1.4",
+  "download_url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/asbo-v1.1.4/all-star-bulk-order-block-1.1.4.zip",
   "homepage": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/tree/main/asbo",
   "requires": "6.5",
   "tested": "6.8",
   "requires_php": "7.4",
-  "last_updated": "2026-08-20 20:06:00 -0400",
+  "last_updated": "2026-08-21 00:45:28 +0000",
   "description": "All Star Embroidery Gutenberg bulk-order workflow with WooCommerce and ASE Supplier Sync compatibility.",
-  "changelog": "<h4>1.1.3</h4><ul><li>Replaced overly small fixed compact-layout typography with responsive clamp()-based sizing across desktop, tablet, and mobile.</li><li>The sticky summary/action bar is rendered active immediately from Step 1 whenever the ASBO block is present.</li><li>Added a one-time 30-second inactivity cue that points customers toward the current sticky Continue action and disappears permanently when activity resumes.</li><li>Redesigned Step 3 with clearer two-part guidance, restrained All Star navy/gold selected states, icons, and plainer artwork-path labels.</li><li>Logged-in customers choosing Reuse approved artwork can select from up to 25 of their own recent WooCommerce orders, with a manual fallback when needed.</li><li>Previous-order selection uses HPOS-compatible WooCommerce order APIs and validates ownership server-side before attaching the reference to the new order.</li><li>Preserves compact product-detail modal, single-open accordions, Total Saved, 1+ normal-price fallback, checkout hardening, and SanMar, S&amp;S Activewear, Momentec, and multi-supplier compatibility.</li></ul>"
+  "changelog": "<h4>1.1.4</h4><ul><li>WooCommerce Regular Price is now the authoritative customer-facing 1+ price.</li><li>Legacy 1: ASBO matrix entries are ignored; all established bulk tiers above 1 remain unchanged.</li><li>Total Saved uses Woo Regular Price as its normal-price baseline.</li><li>ASBO does not read or expose unit_buy_price, supplier price_breaks, MAP, MSRP, suggested retail, or list prices.</li><li>Missing Woo Regular Price now fails clearly and directs admins to Supplier Sync Quick Repair.</li><li>Removed the legacy blank-price purchasability bypass.</li></ul>"
 }
