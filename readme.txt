@@ -4,7 +4,7 @@ Tags: woocommerce, supplier, inventory, sanmar, ssactivewear, github-actions
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 2.0.26
+Stable tag: 2.0.27
 License: Proprietary
 
 Curated multi-supplier-to-WooCommerce synchronization for All Star. SanMar and S&S Activewear connectors included.
@@ -22,7 +22,7 @@ Core V2 behavior:
 * Combined inventory or Preferred Supplier inventory can be selected globally, with product-level overrides.
 * Full color-specific variation galleries are retained where supplied, while merchant-owned imagery remains protected.
 * Supplier categories are mapped into a controlled storefront taxonomy without erasing merchant categories; raw supplier department/channel labels are retained only as internal metadata.
-* Supplier-managed Main Price is calculated from the preferred available supplier wholesale cost + $20. Manual price edits take ownership and are preserved.
+* Supplier-managed Main Price is calculated from the preferred available supplier unit buy cost + $23. Manual price edits take ownership and are preserved.
 * Supplier-managed ASBO tiers are generated as Embroidery Main / Main-$2 / Main-$4 / Main-$6 at 1/20/50/100 units, with Patch always +$3. Manual ASBO matrix edits take ownership and are preserved.
 * Active Products provides Quick Repair and queued Repair Selected.
 * Supplier Intelligence shows source coverage, stock, cost ranges and effective sources; Manage Suppliers provides variation-level source detail.
@@ -40,6 +40,12 @@ Core V2 behavior:
 6. Use Suppliers -> Add Products to import new styles or explicitly link a second supplier to an existing Brand + Style product.
 
 == Changelog ==
+
+= 2.0.27 =
+* Changes Supplier Sync-managed WooCommerce Regular Price from verified unit_buy_price + $20 to verified unit_buy_price + $23.
+* Applies the same $23 markup consistently across SanMar, S&S Activewear, Momentec, and multi-supplier pricing selection.
+* Adds a one-time migration that reprices existing Supplier Sync-managed products while preserving merchant-owned/manual prices.
+* Supplier cost normalization, unit_buy_price, price_breaks, MAP/MSRP/list references, inventory, and the established customer bulk-discount ladder are otherwise unchanged.
 
 = 2.0.26 =
 * Standardizes supplier-managed pricing around a verified 1-unit/account buy cost for SanMar, S&S Activewear and Momentec.

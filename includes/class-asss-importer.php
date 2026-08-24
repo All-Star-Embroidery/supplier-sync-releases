@@ -25,6 +25,7 @@ class ASSS_Importer {
         add_action('admin_init', [$this, 'migrate_sanmar_storefront_images_v2024'], 41);
         add_action('admin_init', [$this, 'migrate_sanmar_gallery_images_v2025'], 42);
         add_action('admin_init', [$this, 'migrate_standard_supplier_pricing_v2026'], 43);
+        add_action('admin_init', [$this, 'migrate_supplier_markup_v2027'], 44);
         add_action('asss_product_synced', [$this, 'sync_product_discovery_taxonomy'], 40, 2);
         add_action('asss_product_synced', [$this, 'normalize_canonical_product_title'], 42, 2);
         add_action('asss_product_synced', [$this, 'normalize_product_storefront_sizes'], 45, 2);
@@ -1215,7 +1216,7 @@ class ASSS_Importer {
 
         $wholesale = (string)$this->sanmar->first($row, ['UNIT_BUY_PRICE','PIECE_PRICE','PRICE']);
         if ($wholesale === '' || !is_numeric($wholesale) || (float)$wholesale <= 0) return;
-        $price = (float)$wholesale + 20.0;
+        $price = (float)$wholesale + 23.0;
         $source = 'supplier_markup:sanmar:unit-buy';
 
         $current = $variation->get_regular_price('edit');
@@ -1528,7 +1529,7 @@ class ASSS_Importer {
             if ((string)$variation->get_meta('_asss_stale_variation') === 'yes' || (string)$variation->get_meta('_asss_discontinued_variation') === 'yes') continue;
             $basis = $this->variation_pricing_basis($product_id, $variation_id);
             if (!$basis) continue;
-            $main = (float)$basis['cost'] + 20.0;
+            $main = (float)$basis['cost'] + 23.0;
             if ($main <= 0) continue;
             $mains[] = $main;
             $basis_suppliers[$basis['supplier']] = true;
@@ -3344,11 +3345,32 @@ class ASSS_Importer {
         }
     }
 
+    /** v2.0.27: move Supplier Sync-managed storefront pricing from unit buy + $20 to unit buy + $23. */
+    public function migrate_supplier_markup_v2027(): void {
+        if (!current_user_can('manage_woocommerce')) return;
+        if ((string)get_option('asss_v2027_supplier_markup_migrated','') === 'yes') return;
+        $ids = get_posts([
+            'post_type'=>'product','post_status'=>'any','fields'=>'ids','posts_per_page'=>-1,'no_found_rows'=>true,
+            'meta_key'=>'_asss_sync_enabled','meta_value'=>'yes',
+        ]);
+        $products = 0;
+        foreach ((array)$ids as $product_id) {
+            $product_id = (int)$product_id;
+            if ($product_id < 1) continue;
+            $this->sync_managed_pricing_for_product($product_id);
+            $products++;
+        }
+        update_option('asss_v2027_supplier_markup_migrated','yes',false);
+        ASSS_Logger::log('v2.0.27 updated Supplier Sync-managed storefront markup to unit buy + $23','info',[
+            'products'=>$products,'markup'=>23,
+        ]);
+    }
+
     private function ss_variation_price(int $product_id, array $row): array {
         foreach (['unit_buy_price','customer_price','piece_price'] as $key) {
             $wholesale = $row[$key] ?? null;
             if ($wholesale !== null && $wholesale !== '' && is_numeric($wholesale) && (float)$wholesale > 0) {
-                return [(float)$wholesale + 20.0, 'supplier_markup:ss:unit-buy'];
+                return [(float)$wholesale + 23.0, 'supplier_markup:ss:unit-buy'];
             }
         }
         return [null, ''];
@@ -4243,7 +4265,7 @@ class ASSS_Importer {
     private function momentec_variation_price(array $row): array {
         foreach(['unit_buy_price','customer_price','piece_price'] as $key){
             $cost=$row[$key] ?? null;
-            if($cost!==null && $cost!=='' && is_numeric($cost) && (float)$cost>0)return[(float)$cost+20.0,'supplier_markup:momentec:unit-buy'];
+            if($cost!==null && $cost!=='' && is_numeric($cost) && (float)$cost>0)return[(float)$cost+23.0,'supplier_markup:momentec:unit-buy'];
         }
         return [null,''];
     }
