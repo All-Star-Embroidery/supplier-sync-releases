@@ -168,18 +168,3 @@ jobs:
           git add asbo/latest.json
           git commit -m "release: point ASBO updater to $VERSION release asset" || exit 0
           git push
-
-  publish_supplier_v2027:
-    if: github.event_name == 'issues' && github.event.issue.title == 'PUBLISH SUPPLIER SYNC 2.0.27'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout release repository
-        uses: actions/checkout@v5
-        with:
-          ref: main
-          fetch-depth: 0
-      - name: Publish Supplier Sync v2.0.27
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: bash .release-staging/publish-supplier-v2027.sh
