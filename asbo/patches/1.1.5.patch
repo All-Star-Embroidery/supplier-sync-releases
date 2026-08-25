@@ -1,0 +1,232 @@
+diff -ruN a/README.txt b/README.txt
+--- a/README.txt	2026-08-21 00:41:58.000000000 +0000
++++ b/README.txt	2026-08-25 01:29:48.429313000 +0000
+@@ -1,4 +1,4 @@
+-All Star Bulk Order Block v1.1.4
++All Star Bulk Order Block v1.1.5
+ 
+ GitHub-managed production release for All Star Embroidery.
+ 
+@@ -8,7 +8,6 @@
+ - Server-side variation refresh/validation before cart submission.
+ - Atomic cart rollback if any selected variation fails.
+ - Detailed cart failure messages instead of generic HTTP 500 responses.
+-- Allows validated ASBO variations through WooCommerce even during a temporary blank base-price state because ASBO supplies the decorated selling price.
+ - GitHub manifest updater with automatic WordPress plugin updates.
+ - Post-checkout artwork workflow remains separate and supported.
+ 
+@@ -51,3 +50,12 @@
+ - Checkout now fails clearly when a selected item is missing Woo Regular Price and directs admins to Supplier Sync Quick Repair.
+ - Removed the old purchasability bypass for blank supplier variation prices now that Supplier Sync standardizes Woo Regular Price.
+ - Supplier price_breaks remain private and are never rendered by ASBO; only the customer-facing ASBO pricing matrix is displayed.
++
++
++v1.1.5 stitch-count pricing communication:
++- Clarifies that standard embroidery pricing includes up to 10,000 stitches per design.
++- Adds a compact, non-alarming 10K stitch allowance note beside per-piece embroidery pricing.
++- Adds a fuller 10K Stitch Allowance explanation in the Artwork step, including that any additional embroidery charge is communicated before production begins.
++- Updates the production review fine print to use the same customer-facing stitch-count policy.
++- Adds matching Gutenberg editor previews for the policy.
++- No pricing calculations, checkout rules, stitch-count automation, supplier data, or ASBO discount tiers changed.
+diff -ruN a/all-star-bulk-order-block.php b/all-star-bulk-order-block.php
+--- a/all-star-bulk-order-block.php	2026-08-21 00:42:21.000000000 +0000
++++ b/all-star-bulk-order-block.php	2026-08-25 01:29:48.427934800 +0000
+@@ -2,7 +2,7 @@
+ /**
+  * Plugin Name: All Star Bulk Order Block
+  * Description: Gutenberg block version of the All Star Embroidery bulk-order workflow.
+- * Version: 1.1.4
++ * Version: 1.1.5
+  * Update URI: https://github.com/rolejarczyk/ASE.SupplierSync-Releases/tree/main/asbo
+  * Author: All Star Embroidery
+  * Requires Plugins: woocommerce
+@@ -14,7 +14,7 @@
+ }
+ 
+ final class ASBO_Plugin {
+-    private const VERSION = '1.1.4';
++    private const VERSION = '1.1.5';
+     private const META_ENABLED = '_asbo_enabled';
+     private const META_DISPLAY_NAME = '_asbo_display_name';
+     private const META_DESCRIPTION = '_asbo_short_description';
+@@ -896,6 +896,11 @@
+                                 </div>
+                             </div>
+ 
++                            <div class="asbo__stitch-allowance" role="note" aria-label="10K Stitch Allowance">
++                                <span class="asbo__stitch-allowance-label"><?php esc_html_e( '10K Stitch Allowance', 'all-star-bulk-order' ); ?></span>
++                                <p><?php esc_html_e( 'Standard embroidery pricing includes designs up to 10,000 stitches. Larger or more detailed artwork may exceed this allowance. If an additional embroidery charge is required, we will review your artwork and contact you before production.', 'all-star-bulk-order' ); ?></p>
++                            </div>
++
+                             <div class="asbo__artwork-guide">
+                                 <span class="asbo__artwork-guide-number">1</span>
+                                 <div>
+@@ -1006,7 +1011,7 @@
+                                 <span><?php esc_html_e( 'Estimated decorated-product total', 'all-star-bulk-order' ); ?></span>
+                                 <strong data-review-total>$0.00</strong>
+                             </div>
+-                            <p class="asbo__fine-print"><?php esc_html_e( 'Final pricing may change for high stitch counts, oversized embroidery, metallic or specialty thread, multiple placements, rush production, shipping, and taxes.', 'all-star-bulk-order' ); ?></p>
++                            <p class="asbo__fine-print"><?php esc_html_e( 'Standard embroidery pricing includes up to 10,000 stitches per design. Additional charges may apply for larger or more complex artwork and will be communicated prior to production. Specialty thread, multiple placements, rush production, shipping, and taxes may also affect the final total.', 'all-star-bulk-order' ); ?></p>
+                         </aside>
+                     </div>
+                 </div>
+@@ -1051,6 +1056,14 @@
+             return;
+         }
+ 
++        $has_embroidery = false;
++        foreach ( array_keys( $matrix ) as $decoration_method ) {
++            if ( false !== stripos( (string) $decoration_method, 'embro' ) ) {
++                $has_embroidery = true;
++                break;
++            }
++        }
++
+         $description = (string) $product->get_meta( self::META_DESCRIPTION );
+         if ( '' === trim( $description ) ) {
+             $description = wp_strip_all_tags( $product->get_short_description() );
+@@ -1119,6 +1132,12 @@
+                         </div>
+                         <div class="asbo__active-tier" data-active-tier><?php esc_html_e( 'Enter quantities to calculate your pricing tier', 'all-star-bulk-order' ); ?></div>
+                     </div>
++                    <?php if ( $has_embroidery ) : ?>
++                        <p class="asbo__stitch-policy-note">
++                            <strong><?php esc_html_e( '10K stitch allowance:', 'all-star-bulk-order' ); ?></strong>
++                            <?php esc_html_e( 'Includes embroidery up to 10,000 stitches. Additional charges may apply for larger or more complex designs.', 'all-star-bulk-order' ); ?>
++                        </p>
++                    <?php endif; ?>
+                     <div class="asbo__table-scroll">
+                         <table class="asbo__pricing-table">
+                             <thead>
+@@ -2289,6 +2308,20 @@
+   line-height: 1.6;
+ }
+ 
++.asbo__stitch-policy-note {
++  margin: -2px 0 14px;
++  padding-left: 11px;
++  border-left: 2px solid var(--asbo-gold);
++  color: var(--asbo-muted);
++  font-size: clamp(12.5px, 0.18vw + 12px, 14px);
++  line-height: 1.5;
++}
++
++.asbo__stitch-policy-note strong {
++  color: var(--asbo-navy);
++  font-weight: 800;
++}
++
+ .asbo__active-tier {
+   max-width: 340px;
+   border: 1px solid #ecd483;
+@@ -2569,6 +2602,39 @@
+   line-height: 1.55;
+ }
+ 
++.asbo__stitch-allowance {
++  display: grid;
++  grid-template-columns: auto minmax(0, 1fr);
++  gap: 12px;
++  align-items: start;
++  margin: -6px 0 24px;
++  padding: 14px 16px;
++  border: 1px solid color-mix(in srgb, var(--asbo-gold) 42%, var(--asbo-border));
++  border-radius: 12px;
++  background: color-mix(in srgb, var(--asbo-gold) 8%, #fff);
++}
++
++.asbo__stitch-allowance-label {
++  display: inline-flex;
++  align-items: center;
++  min-height: 28px;
++  padding: 4px 9px;
++  border-radius: 999px;
++  background: var(--asbo-gold);
++  color: var(--asbo-navy);
++  font-size: 11px;
++  font-weight: 900;
++  letter-spacing: 0.03em;
++  white-space: nowrap;
++}
++
++.asbo__stitch-allowance p {
++  margin: 1px 0 0;
++  color: var(--asbo-ink);
++  font-size: clamp(12.5px, 0.2vw + 12px, 14px);
++  line-height: 1.55;
++}
++
+ .asbo__artwork-options {
+   display: grid;
+   gap: 10px;
+@@ -3954,6 +4020,23 @@
+     transition: none !important;
+   }
+ }
++@media (max-width: 620px) {
++  .asbo__stitch-allowance {
++    grid-template-columns: 1fr;
++    gap: 8px;
++    padding: 13px 14px;
++  }
++
++  .asbo__stitch-allowance-label {
++    justify-self: start;
++  }
++
++  .asbo__stitch-policy-note {
++    margin-bottom: 12px;
++  }
++}
++
++
+ CSS;
+     }
+ 
+diff -ruN a/block/block.json b/block/block.json
+--- a/block/block.json	2026-08-21 00:41:58.000000000 +0000
++++ b/block/block.json	2026-08-25 01:29:48.428634024 +0000
+@@ -2,7 +2,7 @@
+   "$schema": "https://schemas.wp.org/trunk/block.json",
+   "apiVersion": 3,
+   "name": "all-star/bulk-order",
+-  "version": "1.1.4",
++  "version": "1.1.5",
+   "title": "All Star Bulk Order",
+   "category": "widgets",
+   "icon": "products",
+diff -ruN a/block/editor.css b/block/editor.css
+--- a/block/editor.css	2026-08-20 21:36:16.000000000 +0000
++++ b/block/editor.css	2026-08-25 01:29:48.429012077 +0000
+@@ -67,3 +67,6 @@
+ }
+ 
+ .asbo-editor__row-total{display:grid;justify-items:end;line-height:1.15}.asbo-editor__row-total small{font-size:9px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--asbo-editor-muted)}
++
++.asbo-editor__stitch-note{margin:14px 0 4px!important;padding-left:10px;border-left:2px solid var(--asbo-editor-primary);color:var(--asbo-editor-muted)!important;font-size:13px!important;line-height:1.5!important}.asbo-editor__stitch-note strong{color:var(--asbo-editor-navy)}
++.asbo-editor__stitch-allowance{display:grid;gap:5px;margin-bottom:18px;padding:13px 14px;border:1px solid color-mix(in srgb,var(--asbo-editor-primary) 42%,var(--asbo-editor-border));border-radius:10px;background:color-mix(in srgb,var(--asbo-editor-primary) 8%,#fff)}.asbo-editor__stitch-allowance strong{color:var(--asbo-editor-navy);font-size:13px}.asbo-editor__stitch-allowance p{margin:0;color:var(--asbo-editor-muted);font-size:12px;line-height:1.5}
+diff -ruN a/block/editor.js b/block/editor.js
+--- a/block/editor.js	2026-08-20 21:35:36.000000000 +0000
++++ b/block/editor.js	2026-08-25 01:29:48.428797823 +0000
+@@ -247,6 +247,10 @@
+           el(Notice, { status: 'info', isDismissible: false },
+             __('This preview uses sample rows. Live WooCommerce products, colors, inventory, and prices render on the website.', 'all-star-bulk-order')
+           ),
++          el('p', { className: 'asbo-editor__stitch-note' },
++            el('strong', {}, __('10K stitch allowance: ', 'all-star-bulk-order')),
++            __('Includes embroidery up to 10,000 stitches. Additional charges may apply for larger or more complex designs.', 'all-star-bulk-order')
++          ),
+           ['Richardson 112 Trucker Snapback', 'Port Authority Silk Touch Polo', 'Sport-Tek Competitor Tee'].map(function (name, index) {
+             return el('div', { className: 'asbo-editor__product-row', key: name },
+               el('span', { className: 'asbo-editor__product-image' }),
+@@ -265,6 +269,10 @@
+           rich('p', 'artworkText'),
+           el('div', { className: 'asbo-editor__artwork-grid' },
+             el('div', { className: 'asbo-editor__artwork-main' },
++              el('div', { className: 'asbo-editor__stitch-allowance' },
++                el('strong', {}, __('10K Stitch Allowance', 'all-star-bulk-order')),
++                el('p', {}, __('Standard embroidery pricing includes designs up to 10,000 stitches. Larger or more detailed artwork may exceed this allowance. If an additional embroidery charge is required, we will review your artwork and contact you before production.', 'all-star-bulk-order'))
++              ),
+               el('strong', {}, __('How will you provide artwork?', 'all-star-bulk-order')),
+               ['Upload after checkout', 'Use artwork from a previous order', 'I need artwork or digitizing help'].map(function (label, index) {
+                 return el('div', { className: 'asbo-editor__option', key: label },
