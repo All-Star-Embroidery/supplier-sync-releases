@@ -1,13 +1,13 @@
 {
   "name": "All Star Bulk Order Block",
   "slug": "all-star-bulk-order-block",
-  "version": "1.1.4",
-  "download_url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/asbo-v1.1.4/all-star-bulk-order-block-1.1.4.zip",
+  "version": "1.1.5",
+  "download_url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/asbo-v1.1.5/all-star-bulk-order-block-1.1.5.zip",
   "homepage": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/tree/main/asbo",
   "requires": "6.5",
   "tested": "6.8",
   "requires_php": "7.4",
-  "last_updated": "2026-08-21 00:45:28 +0000",
+  "last_updated": "2026-08-25 01:33:12 +0000",
   "description": "All Star Embroidery Gutenberg bulk-order workflow with WooCommerce and ASE Supplier Sync compatibility.",
-  "changelog": "<h4>1.1.4</h4><ul><li>WooCommerce Regular Price is now the authoritative customer-facing 1+ price.</li><li>Legacy 1: ASBO matrix entries are ignored; all established bulk tiers above 1 remain unchanged.</li><li>Total Saved uses Woo Regular Price as its normal-price baseline.</li><li>ASBO does not read or expose unit_buy_price, supplier price_breaks, MAP, MSRP, suggested retail, or list prices.</li><li>Missing Woo Regular Price now fails clearly and directs admins to Supplier Sync Quick Repair.</li><li>Removed the legacy blank-price purchasability bypass.</li></ul>"
+  "changelog": "<h4>1.1.5</h4><ul><li>Clarifies that standard embroidery pricing includes up to 10,000 stitches per design.</li><li>Adds a compact 10K stitch allowance note beside embroidery pricing.</li><li>Adds a detailed 10K Stitch Allowance explanation in the Artwork step.</li><li>Any additional embroidery charge is communicated before production begins.</li><li>No pricing calculations, bulk tiers, checkout rules, or supplier pricing were changed.</li></ul>"
 }
