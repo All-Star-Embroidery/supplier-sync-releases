@@ -49,51 +49,55 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
 
-      - name: Restore exact validated v1.1.2 archive
-        if: steps.pkg.outputs.version == '1.1.2'
-        shell: bash
-        run: |
-          set -euo pipefail
-          ZIP="${{ steps.pkg.outputs.zip }}"
-          mkdir -p "$(dirname "$ZIP")"
-          cat .release-staging/asbo-v1.1.2/part*.b64 | tr -d '\r\n' | base64 --decode > "$ZIP"
-          echo '27afc6d7c825b0951278f52afd1daa645f0f4807051e9e3ee9831754b6f3cb06  asbo/all-star-bulk-order-block-1.1.2.zip' | sha256sum --check
-          test "$(stat -c%s asbo/all-star-bulk-order-block-1.1.2.zip)" = '36356'
-
-      - name: Restore exact validated v1.1.3 archive
-        if: steps.pkg.outputs.version == '1.1.3'
-        shell: bash
-        run: |
-          set -euo pipefail
-          ZIP="${{ steps.pkg.outputs.zip }}"
-          mkdir -p "$(dirname "$ZIP")"
-          cat .release-staging/asbo-v1.1.3/part*.b64 | tr -d '\r\n' | base64 --decode > "$ZIP"
-          echo '0d2e74df48eb11124c12d300305ecf9fef9f5aacb4588a00a89b77d6361ce16a  asbo/all-star-bulk-order-block-1.1.3.zip' | sha256sum --check
-          test "$(stat -c%s asbo/all-star-bulk-order-block-1.1.3.zip)" = '40675'
-
-      - name: Build validated v1.1.4 or v1.1.5 from v1.1.3
-        if: steps.pkg.outputs.version == '1.1.4' || steps.pkg.outputs.version == '1.1.5'
+      - name: Build requested WordPress package
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${{ steps.pkg.outputs.version }}"
           ZIP="${{ steps.pkg.outputs.zip }}"
+          mkdir -p "$(dirname "$ZIP")"
+
+          if [[ "$VERSION" == '1.1.2' ]]; then
+            cat .release-staging/asbo-v1.1.2/part*.b64 | tr -d '\r\n' | base64 --decode > "$ZIP"
+            echo '27afc6d7c825b0951278f52afd1daa645f0f4807051e9e3ee9831754b6f3cb06  asbo/all-star-bulk-order-block-1.1.2.zip' | sha256sum --check
+            test "$(stat -c%s "$ZIP")" = '36356'
+            exit 0
+          fi
+
+          if [[ "$VERSION" == '1.1.3' ]]; then
+            cat .release-staging/asbo-v1.1.3/part*.b64 | tr -d '\r\n' | base64 --decode > "$ZIP"
+            echo '0d2e74df48eb11124c12d300305ecf9fef9f5aacb4588a00a89b77d6361ce16a  asbo/all-star-bulk-order-block-1.1.3.zip' | sha256sum --check
+            test "$(stat -c%s "$ZIP")" = '40675'
+            exit 0
+          fi
+
+          if [[ "$VERSION" != '1.1.4' && "$VERSION" != '1.1.5' ]]; then
+            echo "No deterministic ASBO build recipe exists for $VERSION" >&2
+            exit 1
+          fi
+
           BASE='/tmp/asbo-v1.1.3.zip'
           WORK="/tmp/asbo-${VERSION}"
-
           cat .release-staging/asbo-v1.1.3/part*.b64 | tr -d '\r\n' | base64 --decode > "$BASE"
           echo '0d2e74df48eb11124c12d300305ecf9fef9f5aacb4588a00a89b77d6361ce16a  /tmp/asbo-v1.1.3.zip' | sha256sum --check
 
           rm -rf "$WORK"
           mkdir -p "$WORK"
           unzip -q "$BASE" -d "$WORK"
+
+          # v1.1.4 patch paths include the plugin directory itself.
           (
-            cd "$WORK/all-star-bulk-order-block-v1.0.0"
+            cd "$WORK"
             patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.4.patch"
-            if [[ "$VERSION" == '1.1.5' ]]; then
-              patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.5.patch"
-            fi
           )
+
+          # v1.1.5 is a patch against the already-built v1.1.4 plugin folder.
+          if [[ "$VERSION" == '1.1.5' ]]; then
+            (
+              cd "$WORK/all-star-bulk-order-block-v1.0.0"
+              patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.5.patch"
+            )
+          fi
 
           MAIN="$WORK/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php"
           BLOCK="$WORK/all-star-bulk-order-block-v1.0.0/block/block.json"
@@ -104,14 +108,13 @@ jobs:
           php -l "$MAIN"
           node --check "$EDITOR_JS"
           python3 -m json.tool "$BLOCK" >/dev/null
-
           python3 - <<PY
           from pathlib import Path
-          p = Path('$MAIN')
-          s = p.read_text()
-          marker = "        return <<<'JS'\n"
-          start = s.index(marker, s.index('private static function inline_js')) + len(marker)
-          end = s.index('\nJS;', start)
+          p=Path('$MAIN')
+          s=p.read_text()
+          marker="        return <<<'JS'\n"
+          start=s.index(marker,s.index('private static function inline_js'))+len(marker)
+          end=s.index('\nJS;',start)
           Path('/tmp/asbo-inline.js').write_text(s[start:end])
           PY
           node --check /tmp/asbo-inline.js
@@ -131,7 +134,6 @@ jobs:
             grep -q 'before production' "$MAIN"
           fi
 
-          mkdir -p "$(dirname "$ZIP")"
           (
             cd "$WORK"
             zip -qr "$GITHUB_WORKSPACE/$ZIP" all-star-bulk-order-block-v1.0.0
@@ -162,10 +164,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ASSET" --clobber
           else
-            gh release create "$TAG" "$ASSET" \
-              --target main \
-              --title "All Star Bulk Order Block v${VERSION}" \
-              --notes-file "asbo/RELEASE-${VERSION}.md"
+            gh release create "$TAG" "$ASSET" --target main --title "All Star Bulk Order Block v${VERSION}" --notes-file "asbo/RELEASE-${VERSION}.md"
           fi
 
       - name: Point WordPress updater to release asset
@@ -185,7 +184,7 @@ jobs:
           if '$VERSION' == '1.1.4':
               data['changelog']='<h4>1.1.4</h4><ul><li>WooCommerce Regular Price is now the authoritative customer-facing 1+ price.</li><li>Legacy 1: ASBO matrix entries are ignored; all established bulk tiers above 1 remain unchanged.</li><li>Total Saved uses Woo Regular Price as its normal-price baseline.</li><li>ASBO does not read or expose unit_buy_price, supplier price_breaks, MAP, MSRP, suggested retail, or list prices.</li><li>Missing Woo Regular Price now fails clearly and directs admins to Supplier Sync Quick Repair.</li><li>Removed the legacy blank-price purchasability bypass.</li></ul>'
           elif '$VERSION' == '1.1.5':
-              data['changelog']='<h4>1.1.5</h4><ul><li>Clarifies that standard embroidery pricing includes up to 10,000 stitches per design.</li><li>Adds a compact 10K stitch allowance note beside embroidery pricing.</li><li>Adds a detailed 10K Stitch Allowance explanation in the Artwork step.</li><li>Any additional embroidery charge is explicitly communicated before production begins.</li><li>No pricing calculations, bulk tiers, checkout rules, or supplier pricing were changed.</li></ul>'
+              data['changelog']='<h4>1.1.5</h4><ul><li>Clarifies that standard embroidery pricing includes up to 10,000 stitches per design.</li><li>Adds a compact 10K stitch allowance note beside embroidery pricing.</li><li>Adds a detailed 10K Stitch Allowance explanation in the Artwork step.</li><li>Any additional embroidery charge is communicated before production begins.</li><li>No pricing calculations, bulk tiers, checkout rules, or supplier pricing were changed.</li></ul>'
           p.write_text(json.dumps(data, indent=2) + '\n')
           PY
           git config user.name 'github-actions[bot]'
