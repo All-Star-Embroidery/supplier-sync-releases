@@ -1,0 +1,35 @@
+name: Inspect ASBO Source
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: github.event_name == 'issues' && startsWith(github.event.issue.title, 'INSPECT ASBO ')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+      - name: Rebuild ASBO v1.1.6 and print relevant details code
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=/tmp/asbo-v1.1.3.zip
+          WORK=/tmp/asbo-inspect
+          cat .release-staging/asbo-v1.1.3/part*.b64 | tr -d '\r\n' | base64 --decode > "$BASE"
+          rm -rf "$WORK" && mkdir -p "$WORK"
+          unzip -q "$BASE" -d "$WORK"
+          ( cd "$WORK" && patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.4.patch" )
+          ( cd "$WORK/all-star-bulk-order-block-v1.0.0" && patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.5.patch" )
+          ( cd "$WORK/all-star-bulk-order-block-v1.0.0" && patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.6.patch" )
+          MAIN="$WORK/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php"
+          echo '=== Product details strings ==='
+          grep -n -C 8 -E 'Product details|size information|details-modal|product-details|data-details|data-product-details' "$MAIN" || true
+          echo '=== Modal-related JS ==='
+          grep -n -C 10 -E 'modal|detailsTrigger|detailTrigger|productDetail' "$MAIN" | head -n 400 || true
