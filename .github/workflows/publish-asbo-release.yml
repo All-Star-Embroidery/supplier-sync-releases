@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "ASBO version to publish, e.g. 1.1.5"
+        description: "ASBO version to publish, e.g. 1.1.6"
         required: true
         type: string
   issues:
@@ -42,7 +42,7 @@ jobs:
             VERSION="${{ github.event.issue.title }}"
             VERSION="${VERSION#PUBLISH ASBO }"
           else
-            VERSION="1.1.5"
+            VERSION="1.1.6"
           fi
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]
           ZIP="asbo/all-star-bulk-order-block-${VERSION}.zip"
@@ -71,7 +71,7 @@ jobs:
             exit 0
           fi
 
-          if [[ "$VERSION" != '1.1.4' && "$VERSION" != '1.1.5' ]]; then
+          if [[ "$VERSION" != '1.1.4' && "$VERSION" != '1.1.5' && "$VERSION" != '1.1.6' ]]; then
             echo "No deterministic ASBO build recipe exists for $VERSION" >&2
             exit 1
           fi
@@ -91,11 +91,18 @@ jobs:
             patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.4.patch"
           )
 
-          # v1.1.5 is a patch against the already-built v1.1.4 plugin folder.
-          if [[ "$VERSION" == '1.1.5' ]]; then
+          # v1.1.5 and v1.1.6 are patches against the built plugin folder.
+          if [[ "$VERSION" == '1.1.5' || "$VERSION" == '1.1.6' ]]; then
             (
               cd "$WORK/all-star-bulk-order-block-v1.0.0"
               patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.5.patch"
+            )
+          fi
+
+          if [[ "$VERSION" == '1.1.6' ]]; then
+            (
+              cd "$WORK/all-star-bulk-order-block-v1.0.0"
+              patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.6.patch"
             )
           fi
 
@@ -123,15 +130,22 @@ jobs:
             echo '05ae6d0d79d156e7f788f9b89d771d8ceedaedfb2bdadc4d4b6a4b1495607f18  '"$MAIN" | sha256sum --check
             echo 'b17476a725f3f6610cd1d3064607ef08a0402931ea4c0c6da23c6dbef5991d60  '"$BLOCK" | sha256sum --check
             echo '7cfe72a41880c8ec1f6ca8dfeffc74284fdf2665d47bf2aa124d6e0d6c9c070d  '"$README" | sha256sum --check
-          else
+          elif [[ "$VERSION" == '1.1.5' ]]; then
             echo 'b2b01ae3b1eed4a016f7432fb7d6ecd8c9fb6d173c04293c3edea6786f0d95ae  '"$MAIN" | sha256sum --check
             echo '08e271f18482f68ba6778ce7ab1c3fb7d34c1158a5f2391640cf76310a7222bf  '"$BLOCK" | sha256sum --check
             echo '738681e383c57af82630db503be9d41aa2ab6b0fa28296f56842bd2040468b9d  '"$EDITOR_JS" | sha256sum --check
             echo '7a0e0ee84d3222709ce2a15ece822db38864498fa629374fc6e58b147d178ee3  '"$EDITOR_CSS" | sha256sum --check
             echo 'c233e0add85ae610376e6562672b8467f8bb7a62c4b1b28711093ea8b0022d03  '"$README" | sha256sum --check
             grep -q '10K Stitch Allowance' "$MAIN"
-            grep -q '10,000 stitches per design' "$MAIN"
-            grep -q 'before production' "$MAIN"
+          else
+            echo '0da75c56ab1aae84cd72ddc8b9d9ece00d1be9d54c00f28e11e39452df24848a  '"$MAIN" | sha256sum --check
+            echo 'd7aed28e98d26626b7eb085ea6b12faa155b2924d4d1340c3ff459455ed05e07  '"$BLOCK" | sha256sum --check
+            echo '738681e383c57af82630db503be9d41aa2ab6b0fa28296f56842bd2040468b9d  '"$EDITOR_JS" | sha256sum --check
+            echo '7a0e0ee84d3222709ce2a15ece822db38864498fa629374fc6e58b147d178ee3  '"$EDITOR_CSS" | sha256sum --check
+            echo '3c41d1ca6f97cbac8ddcfab2258e79c100efce64a0fd837b5feef02ceb3b16f8  '"$README" | sha256sum --check
+            grep -q 'Starting at %s' "$MAIN"
+            grep -q 'data-subcategory-filter-value' "$MAIN"
+            grep -q 'input:checked + span::after' "$MAIN"
           fi
 
           (
@@ -185,6 +199,8 @@ jobs:
               data['changelog']='<h4>1.1.4</h4><ul><li>WooCommerce Regular Price is now the authoritative customer-facing 1+ price.</li><li>Legacy 1: ASBO matrix entries are ignored; all established bulk tiers above 1 remain unchanged.</li><li>Total Saved uses Woo Regular Price as its normal-price baseline.</li><li>ASBO does not read or expose unit_buy_price, supplier price_breaks, MAP, MSRP, suggested retail, or list prices.</li><li>Missing Woo Regular Price now fails clearly and directs admins to Supplier Sync Quick Repair.</li><li>Removed the legacy blank-price purchasability bypass.</li></ul>'
           elif '$VERSION' == '1.1.5':
               data['changelog']='<h4>1.1.5</h4><ul><li>Clarifies that standard embroidery pricing includes up to 10,000 stitches per design.</li><li>Adds a compact 10K stitch allowance note beside embroidery pricing.</li><li>Adds a detailed 10K Stitch Allowance explanation in the Artwork step.</li><li>Any additional embroidery charge is communicated before production begins.</li><li>No pricing calculations, bulk tiers, checkout rules, or supplier pricing were changed.</li></ul>'
+          elif '$VERSION' == '1.1.6':
+              data['changelog']='<h4>1.1.6</h4><ul><li>Adds a Starting at unit price to collapsed product rows.</li><li>Adds a gold border and checkmark to the selected decoration method.</li><li>Adds instant subcategory filtering scoped only to the WooCommerce parent category configured for the ASBO block.</li><li>Unrelated catalog categories are never shown in the scoped filter.</li><li>No pricing calculations, supplier-cost logic, cart rules, or checkout behavior changed.</li></ul>'
           p.write_text(json.dumps(data, indent=2) + '\n')
           PY
           git config user.name 'github-actions[bot]'
