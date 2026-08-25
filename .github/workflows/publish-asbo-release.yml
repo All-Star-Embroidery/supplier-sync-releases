@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "ASBO version to publish, e.g. 1.1.6"
+        description: "ASBO version to publish, e.g. 1.1.7"
         required: true
         type: string
   issues:
@@ -24,6 +24,7 @@ jobs:
       (github.event_name == 'issues' && startsWith(github.event.issue.title, 'PUBLISH ASBO ')) ||
       (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout release repository
         uses: actions/checkout@v5
@@ -42,9 +43,19 @@ jobs:
             VERSION="${{ github.event.issue.title }}"
             VERSION="${VERSION#PUBLISH ASBO }"
           else
-            VERSION="1.1.6"
+            VERSION="1.1.7"
           fi
+
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]
+
+          case "$VERSION" in
+            1.1.2|1.1.3|1.1.4|1.1.5|1.1.6|1.1.7) ;;
+            *)
+              echo "No deterministic ASBO build recipe exists for $VERSION" >&2
+              exit 1
+              ;;
+          esac
+
           ZIP="asbo/all-star-bulk-order-block-${VERSION}.zip"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
@@ -71,13 +82,10 @@ jobs:
             exit 0
           fi
 
-          if [[ "$VERSION" != '1.1.4' && "$VERSION" != '1.1.5' && "$VERSION" != '1.1.6' ]]; then
-            echo "No deterministic ASBO build recipe exists for $VERSION" >&2
-            exit 1
-          fi
-
           BASE='/tmp/asbo-v1.1.3.zip'
           WORK="/tmp/asbo-${VERSION}"
+          PLUGIN="$WORK/all-star-bulk-order-block-v1.0.0"
+
           cat .release-staging/asbo-v1.1.3/part*.b64 | tr -d '\r\n' | base64 --decode > "$BASE"
           echo '0d2e74df48eb11124c12d300305ecf9fef9f5aacb4588a00a89b77d6361ce16a  /tmp/asbo-v1.1.3.zip' | sha256sum --check
 
@@ -91,30 +99,34 @@ jobs:
             patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.4.patch"
           )
 
-          # v1.1.5 and v1.1.6 are patches against the built plugin folder.
-          if [[ "$VERSION" == '1.1.5' || "$VERSION" == '1.1.6' ]]; then
+          if [[ "$VERSION" == '1.1.5' || "$VERSION" == '1.1.6' || "$VERSION" == '1.1.7' ]]; then
             (
-              cd "$WORK/all-star-bulk-order-block-v1.0.0"
+              cd "$PLUGIN"
               patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.5.patch"
             )
           fi
 
-          if [[ "$VERSION" == '1.1.6' ]]; then
+          if [[ "$VERSION" == '1.1.6' || "$VERSION" == '1.1.7' ]]; then
             (
-              cd "$WORK/all-star-bulk-order-block-v1.0.0"
+              cd "$PLUGIN"
               patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.6.patch"
             )
           fi
 
-          MAIN="$WORK/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php"
-          BLOCK="$WORK/all-star-bulk-order-block-v1.0.0/block/block.json"
-          EDITOR_JS="$WORK/all-star-bulk-order-block-v1.0.0/block/editor.js"
-          EDITOR_CSS="$WORK/all-star-bulk-order-block-v1.0.0/block/editor.css"
-          README="$WORK/all-star-bulk-order-block-v1.0.0/README.txt"
+          if [[ "$VERSION" == '1.1.7' ]]; then
+            python3 "$GITHUB_WORKSPACE/asbo/transforms/1.1.7.py" "$PLUGIN"
+          fi
+
+          MAIN="$PLUGIN/all-star-bulk-order-block.php"
+          BLOCK="$PLUGIN/block/block.json"
+          EDITOR_JS="$PLUGIN/block/editor.js"
+          EDITOR_CSS="$PLUGIN/block/editor.css"
+          README="$PLUGIN/README.txt"
 
           php -l "$MAIN"
           node --check "$EDITOR_JS"
           python3 -m json.tool "$BLOCK" >/dev/null
+
           python3 - <<PY
           from pathlib import Path
           p=Path('$MAIN')
@@ -137,7 +149,7 @@ jobs:
             echo '7a0e0ee84d3222709ce2a15ece822db38864498fa629374fc6e58b147d178ee3  '"$EDITOR_CSS" | sha256sum --check
             echo 'c233e0add85ae610376e6562672b8467f8bb7a62c4b1b28711093ea8b0022d03  '"$README" | sha256sum --check
             grep -q '10K Stitch Allowance' "$MAIN"
-          else
+          elif [[ "$VERSION" == '1.1.6' ]]; then
             echo '0da75c56ab1aae84cd72ddc8b9d9ece00d1be9d54c00f28e11e39452df24848a  '"$MAIN" | sha256sum --check
             echo 'd7aed28e98d26626b7eb085ea6b12faa155b2924d4d1340c3ff459455ed05e07  '"$BLOCK" | sha256sum --check
             echo '738681e383c57af82630db503be9d41aa2ab6b0fa28296f56842bd2040468b9d  '"$EDITOR_JS" | sha256sum --check
@@ -146,6 +158,18 @@ jobs:
             grep -q 'Starting at %s' "$MAIN"
             grep -q 'data-subcategory-filter-value' "$MAIN"
             grep -q 'input:checked + span::after' "$MAIN"
+          else
+            # v1.1.7 transform uses exact source replacements with assertions.
+            grep -q 'Details & sizing' "$MAIN"
+            grep -q 'asbo__product-summary' "$MAIN"
+            grep -q 'View details and sizing for %s' "$MAIN"
+            grep -q "Version: 1.1.7" "$MAIN"
+            grep -q '"version": "1.1.7"' "$BLOCK"
+            grep -q "const panel = productEl?.querySelector('.asbo__product-panel')" /tmp/asbo-inline.js
+            grep -q "const otherPanel = otherProduct?.querySelector('.asbo__product-panel')" /tmp/asbo-inline.js
+            ! grep -q "const panel = trigger.nextElementSibling" /tmp/asbo-inline.js
+            ! grep -q "animatePanel(openTrigger.nextElementSibling" /tmp/asbo-inline.js
+            sha256sum "$MAIN" "$BLOCK" "$README"
           fi
 
           (
@@ -163,6 +187,8 @@ jobs:
           unzip -t "$ZIP" >/dev/null
           unzip -l "$ZIP" | grep -q 'all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php'
           unzip -p "$ZIP" all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php | grep -q "Version: $VERSION"
+          echo "Package size: $(stat -c%s "$ZIP") bytes"
+          sha256sum "$ZIP"
 
       - name: Create or update GitHub Release
         env:
@@ -175,10 +201,14 @@ jobs:
           TAG="asbo-v${VERSION}"
           ASSET="all-star-bulk-order-block-${VERSION}.zip"
           cp "$ZIP" "$ASSET"
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ASSET" --clobber
           else
-            gh release create "$TAG" "$ASSET" --target main --title "All Star Bulk Order Block v${VERSION}" --notes-file "asbo/RELEASE-${VERSION}.md"
+            gh release create "$TAG" "$ASSET" \
+              --target main \
+              --title "All Star Bulk Order Block v${VERSION}" \
+              --notes-file "asbo/RELEASE-${VERSION}.md"
           fi
 
       - name: Point WordPress updater to release asset
@@ -190,19 +220,25 @@ jobs:
           import json
           from datetime import datetime, timezone
           from pathlib import Path
+
           p=Path('asbo/latest.json')
           data=json.loads(p.read_text())
           data['version']='$VERSION'
           data['download_url']=f'https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/asbo-v$VERSION/all-star-bulk-order-block-$VERSION.zip'
           data['last_updated']=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
+
           if '$VERSION' == '1.1.4':
               data['changelog']='<h4>1.1.4</h4><ul><li>WooCommerce Regular Price is now the authoritative customer-facing 1+ price.</li><li>Legacy 1: ASBO matrix entries are ignored; all established bulk tiers above 1 remain unchanged.</li><li>Total Saved uses Woo Regular Price as its normal-price baseline.</li><li>ASBO does not read or expose unit_buy_price, supplier price_breaks, MAP, MSRP, suggested retail, or list prices.</li><li>Missing Woo Regular Price now fails clearly and directs admins to Supplier Sync Quick Repair.</li><li>Removed the legacy blank-price purchasability bypass.</li></ul>'
           elif '$VERSION' == '1.1.5':
               data['changelog']='<h4>1.1.5</h4><ul><li>Clarifies that standard embroidery pricing includes up to 10,000 stitches per design.</li><li>Adds a compact 10K stitch allowance note beside embroidery pricing.</li><li>Adds a detailed 10K Stitch Allowance explanation in the Artwork step.</li><li>Any additional embroidery charge is communicated before production begins.</li><li>No pricing calculations, bulk tiers, checkout rules, or supplier pricing were changed.</li></ul>'
           elif '$VERSION' == '1.1.6':
               data['changelog']='<h4>1.1.6</h4><ul><li>Adds a Starting at unit price to collapsed product rows.</li><li>Adds a gold border and checkmark to the selected decoration method.</li><li>Adds instant subcategory filtering scoped only to the WooCommerce parent category configured for the ASBO block.</li><li>Unrelated catalog categories are never shown in the scoped filter.</li><li>No pricing calculations, supplier-cost logic, cart rules, or checkout behavior changed.</li></ul>'
+          elif '$VERSION' == '1.1.7':
+              data['changelog']='<h4>1.1.7</h4><ul><li>Adds a subtle Details &amp; sizing chip directly to collapsed product rows.</li><li>The chip opens the existing product details and size-information modal without expanding the pricing accordion.</li><li>Uses a low-contrast neutral treatment with navy text, soft gray border, and restrained gold keyboard focus.</li><li>Keeps the accordion row and details chip as separate native buttons for correct keyboard and pointer behavior.</li><li>Removes the redundant details link from inside the expanded pricing panel.</li><li>No pricing, Supplier Sync, cart, artwork, savings, or checkout calculations changed.</li></ul>'
+
           p.write_text(json.dumps(data, indent=2) + '\n')
           PY
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add asbo/latest.json
