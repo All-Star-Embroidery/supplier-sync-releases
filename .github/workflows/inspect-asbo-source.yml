@@ -29,7 +29,13 @@ jobs:
           ( cd "$WORK/all-star-bulk-order-block-v1.0.0" && patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.5.patch" )
           ( cd "$WORK/all-star-bulk-order-block-v1.0.0" && patch -p1 < "$GITHUB_WORKSPACE/asbo/patches/1.1.6.patch" )
           MAIN="$WORK/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php"
-          echo '=== Product details strings ==='
-          grep -n -C 8 -E 'Product details|size information|details-modal|product-details|data-details|data-product-details' "$MAIN" || true
-          echo '=== Modal-related JS ==='
-          grep -n -C 10 -E 'modal|detailsTrigger|detailTrigger|productDetail' "$MAIN" | head -n 400 || true
+          echo '=== Product row markup ==='
+          sed -n '1188,1235p' "$MAIN"
+          echo '=== Product trigger CSS ==='
+          grep -n -A 90 -B 10 '^\.asbo__product-trigger' "$MAIN" | head -n 180 || true
+          echo '=== Product title/mobile CSS ==='
+          grep -n -A 70 -B 10 -E '^\.asbo__product-title-wrap|^  \.asbo__product-trigger|^  \.asbo__product-title-wrap' "$MAIN" | head -n 260 || true
+          echo '=== Details button CSS ==='
+          grep -n -A 55 -B 10 '^\.asbo__details-button' "$MAIN" || true
+          echo '=== Click handler ==='
+          sed -n '4828,4888p' "$MAIN"
