@@ -1,0 +1,385 @@
+diff -ruN a/README.txt b/README.txt
+--- a/README.txt	2026-08-25 01:29:48.000000000 +0000
++++ b/README.txt	2026-08-25 03:16:16.354025218 +0000
+@@ -1,4 +1,4 @@
+-All Star Bulk Order Block v1.1.5
++All Star Bulk Order Block v1.1.6
+ 
+ GitHub-managed production release for All Star Embroidery.
+ 
+@@ -59,3 +59,11 @@
+ - Updates the production review fine print to use the same customer-facing stitch-count policy.
+ - Adds matching Gutenberg editor previews for the policy.
+ - No pricing calculations, checkout rules, stitch-count automation, supplier data, or ASBO discount tiers changed.
++
++
++v1.1.6 launch ordering polish:
++- Adds a customer-visible Starting at price to every collapsed product row, sourced only from Woo Regular Price and the customer-facing ASBO pricing matrix.
++- Strengthens the selected decoration method with a gold border and checkmark in addition to the existing dark active background.
++- Adds a lightweight subcategory filter when the ASBO block is scoped to a WooCommerce parent category. Only represented direct child categories of that configured parent are shown, so a Headwear/Hats block never surfaces Shirt/Apparel filters.
++- Filtering happens instantly without a page reload and automatically closes a product accordion if it becomes hidden by the selected filter.
++- Existing pricing calculations, Supplier Sync cost architecture, 10K stitch policy, cart behavior, and checkout workflow are unchanged.
+ diff -ruN a/all-star-bulk-order-block.php b/all-star-bulk-order-block.php
+--- a/all-star-bulk-order-block.php	2026-08-25 01:29:48.000000000 +0000
++++ b/all-star-bulk-order-block.php	2026-08-25 03:16:16.353490153 +0000
+@@ -2,7 +2,7 @@
+ /**
+  * Plugin Name: All Star Bulk Order Block
+  * Description: Gutenberg block version of the All Star Embroidery bulk-order workflow.
+- * Version: 1.1.5
++ * Version: 1.1.6
+  * Update URI: https://github.com/rolejarczyk/ASE.SupplierSync-Releases/tree/main/asbo
+  * Author: All Star Embroidery
+  * Requires Plugins: woocommerce
+@@ -14,7 +14,7 @@
+ }
+ 
+ final class ASBO_Plugin {
+-    private const VERSION = '1.1.5';
++    private const VERSION = '1.1.6';
+     private const META_ENABLED = '_asbo_enabled';
+     private const META_DISPLAY_NAME = '_asbo_display_name';
+     private const META_DESCRIPTION = '_asbo_short_description';
+@@ -782,6 +782,48 @@
+         $products = wc_get_products( $query_vars );
+         remove_filter( 'woocommerce_product_data_store_cpt_get_products_query', $query_filter, 10 );
+ 
++        // If this ASBO block is already scoped to a WooCommerce category (for
++        // example Headwear), expose only that category's represented direct
++        // children as lightweight storefront filters. This keeps the customer
++        // inside the intended product family instead of turning ASBO into a
++        // second full-catalog WooCommerce browser.
++        $filter_parent_term = null;
++        $filter_categories  = array();
++        if ( '' !== trim( $atts['category'] ) ) {
++            $candidate_parent = get_term_by( 'slug', sanitize_title( $atts['category'] ), 'product_cat' );
++            if ( $candidate_parent instanceof WP_Term ) {
++                $filter_parent_term = $candidate_parent;
++                $children = get_terms( array(
++                    'taxonomy'   => 'product_cat',
++                    'parent'     => (int) $candidate_parent->term_id,
++                    'hide_empty' => false,
++                    'orderby'    => 'name',
++                    'order'      => 'ASC',
++                ) );
++
++                if ( ! is_wp_error( $children ) ) {
++                    foreach ( $children as $child ) {
++                        $represented = false;
++                        foreach ( $products as $product ) {
++                            $product_term_ids = wp_get_post_terms( $product->get_id(), 'product_cat', array( 'fields' => 'ids' ) );
++                            if ( is_wp_error( $product_term_ids ) ) {
++                                continue;
++                            }
++                            foreach ( $product_term_ids as $product_term_id ) {
++                                if ( (int) $product_term_id === (int) $child->term_id || term_is_ancestor_of( (int) $child->term_id, (int) $product_term_id, 'product_cat' ) ) {
++                                    $represented = true;
++                                    break 2;
++                                }
++                            }
++                        }
++                        if ( $represented ) {
++                            $filter_categories[] = $child;
++                        }
++                    }
++                }
++            }
++        }
++
+         $recent_customer_orders = self::recent_customer_orders();
+         $my_account_url         = wc_get_page_permalink( 'myaccount' );
+ 
+@@ -864,6 +906,25 @@
+                         <p><?php echo esc_html( $atts['products_text'] ); ?></p>
+                     </div>
+ 
++                    <?php if ( $filter_parent_term instanceof WP_Term && ! empty( $filter_categories ) ) : ?>
++                        <div class="asbo__subcategory-filter" data-subcategory-filter>
++                            <div class="asbo__subcategory-filter-copy">
++                                <strong><?php esc_html_e( 'Filter styles', 'all-star-bulk-order' ); ?></strong>
++                                <small><?php echo esc_html( sprintf( __( 'Showing only %s subcategories.', 'all-star-bulk-order' ), $filter_parent_term->name ) ); ?></small>
++                            </div>
++                            <div class="asbo__subcategory-filter-options" role="group" aria-label="<?php echo esc_attr( sprintf( __( 'Filter %s products', 'all-star-bulk-order' ), $filter_parent_term->name ) ); ?>">
++                                <button type="button" class="is-active" data-subcategory-filter-value="all" aria-pressed="true">
++                                    <?php echo esc_html( sprintf( __( 'All %s', 'all-star-bulk-order' ), $filter_parent_term->name ) ); ?>
++                                </button>
++                                <?php foreach ( $filter_categories as $filter_category ) : ?>
++                                    <button type="button" data-subcategory-filter-value="<?php echo esc_attr( $filter_category->slug ); ?>" aria-pressed="false">
++                                        <?php echo esc_html( $filter_category->name ); ?>
++                                    </button>
++                                <?php endforeach; ?>
++                            </div>
++                        </div>
++                    <?php endif; ?>
++
+                     <div class="asbo__products">
+                         <?php if ( empty( $products ) ) : ?>
+                             <div class="asbo__empty">
+@@ -872,7 +933,7 @@
+                             </div>
+                         <?php else : ?>
+                             <?php foreach ( $products as $product ) : ?>
+-                                <?php self::render_product( $product, $atts ); ?>
++                                <?php self::render_product( $product, $atts, $filter_categories ); ?>
+                             <?php endforeach; ?>
+                         <?php endif; ?>
+                     </div>
+@@ -1049,7 +1110,7 @@
+         return (string) ob_get_clean();
+     }
+ 
+-    private static function render_product( WC_Product $product, array $atts = array() ): void {
++    private static function render_product( WC_Product $product, array $atts = array(), array $filter_categories = array() ): void {
+         $display_name = self::display_name( $product );
+         $matrix = self::parse_pricing_matrix( (string) $product->get_meta( self::META_PRICING ) );
+         if ( empty( $matrix ) ) {
+@@ -1095,18 +1156,53 @@
+                 ? wc_price( $base_min )
+                 : wc_price( $base_min ) . '<span class="asbo__price-range-separator">–</span>' . wc_price( $base_max ) );
+ 
++        // Collapsed rows show the lowest customer-facing unit price available in
++        // the approved ASBO matrix (or Woo Regular Price at 1+) so shoppers have
++        // immediate price context before opening the accordion. Supplier cost
++        // fields are intentionally never consulted here.
++        $starting_price_candidates = $base_prices;
++        foreach ( $matrix as $tiers ) {
++            foreach ( $tiers as $threshold => $price ) {
++                if ( (int) $threshold > 1 && is_numeric( $price ) ) {
++                    $starting_price_candidates[] = (float) $price;
++                }
++            }
++        }
++        $starting_price = $starting_price_candidates ? min( $starting_price_candidates ) : null;
++
++        $product_filter_slugs = array();
++        if ( ! empty( $filter_categories ) ) {
++            $product_term_ids = wp_get_post_terms( $product->get_id(), 'product_cat', array( 'fields' => 'ids' ) );
++            if ( ! is_wp_error( $product_term_ids ) ) {
++                foreach ( $filter_categories as $filter_category ) {
++                    foreach ( $product_term_ids as $product_term_id ) {
++                        if ( (int) $product_term_id === (int) $filter_category->term_id || term_is_ancestor_of( (int) $filter_category->term_id, (int) $product_term_id, 'product_cat' ) ) {
++                            $product_filter_slugs[] = sanitize_title( $filter_category->slug );
++                            break;
++                        }
++                    }
++                }
++            }
++        }
++
+         $thresholds = array( 1 );
+         foreach ( $matrix as $tiers ) {
+             $thresholds = array_unique( array_merge( $thresholds, array_keys( $tiers ) ) );
+         }
+         sort( $thresholds, SORT_NUMERIC );
+         ?>
+-        <article class="asbo__product" data-product data-product-id="<?php echo esc_attr( $product->get_id() ); ?>" data-product-name="<?php echo esc_attr( $display_name ); ?>">
++        <article class="asbo__product" data-product data-product-id="<?php echo esc_attr( $product->get_id() ); ?>" data-product-name="<?php echo esc_attr( $display_name ); ?>" data-subcategories="<?php echo esc_attr( implode( ' ', array_unique( $product_filter_slugs ) ) ); ?>">
+             <button type="button" class="asbo__product-trigger" aria-expanded="false">
+                 <span class="asbo__product-thumb"><?php echo wp_kses_post( $thumb ); ?></span>
+                 <span class="asbo__product-title-wrap">
+                     <strong><?php echo esc_html( $display_name ); ?></strong>
+-                    <small data-product-quantity-label><?php esc_html_e( 'No pieces selected', 'all-star-bulk-order' ); ?></small>
++                    <small class="asbo__product-meta">
++                        <span data-product-quantity-label><?php esc_html_e( 'No pieces selected', 'all-star-bulk-order' ); ?></span>
++                        <?php if ( null !== $starting_price ) : ?>
++                            <span class="asbo__product-meta-separator" aria-hidden="true">•</span>
++                            <span class="asbo__starting-price"><?php echo wp_kses_post( sprintf( __( 'Starting at %s', 'all-star-bulk-order' ), wc_price( $starting_price ) ) ); ?></span>
++                        <?php endif; ?>
++                    </small>
+                 </span>
+                 <span class="asbo__product-total-wrap">
+                     <small><?php echo esc_html( $atts['product_total_label'] ); ?></small>
+@@ -4037,6 +4133,143 @@
+ }
+ 
+ 
++
++/* v1.1.6 launch polish: collapsed pricing context, stronger decoration state, scoped subcategory filtering. */
++.asbo__product-meta {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 5px;
++}
++
++.asbo__product-meta-separator {
++  color: #b4bac5;
++}
++
++.asbo__starting-price {
++  color: var(--asbo-navy);
++  font-weight: 800;
++}
++
++.asbo__subcategory-filter {
++  display: grid;
++  gap: 10px;
++  margin: 0 0 16px;
++  padding: 14px 16px;
++  border: 1px solid var(--asbo-border);
++  border-radius: var(--asbo-card-radius, 14px);
++  background: var(--asbo-surface);
++}
++
++.asbo__subcategory-filter-copy {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: baseline;
++  gap: 7px 12px;
++}
++
++.asbo__subcategory-filter-copy strong {
++  color: var(--asbo-navy);
++  font-size: clamp(13px, 0.25vw + 12px, 15px);
++  font-weight: 850;
++}
++
++.asbo__subcategory-filter-copy small {
++  color: var(--asbo-muted);
++  font-size: clamp(12px, 0.2vw + 11px, 13px);
++}
++
++.asbo__subcategory-filter-options {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 8px;
++}
++
++.asbo__subcategory-filter-options button {
++  min-height: 36px;
++  border: 1px solid var(--asbo-border-strong);
++  border-radius: 999px;
++  padding: 7px 13px;
++  background: #fff;
++  color: var(--asbo-navy);
++  font: inherit;
++  font-size: clamp(12px, 0.2vw + 11px, 13px);
++  font-weight: 800;
++  line-height: 1.2;
++  cursor: pointer;
++  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
++}
++
++.asbo__subcategory-filter-options button:hover {
++  border-color: #9da8ba;
++}
++
++.asbo__subcategory-filter-options button.is-active {
++  border-color: var(--asbo-gold-dark);
++  background: var(--asbo-gold);
++  color: var(--asbo-navy);
++  box-shadow: 0 3px 10px rgba(17, 25, 45, 0.08);
++}
++
++.asbo__decoration-options span {
++  position: relative;
++  padding-right: 38px;
++}
++
++.asbo__decoration-options span::after {
++  position: absolute;
++  top: 50%;
++  right: 13px;
++  display: grid;
++  width: 18px;
++  height: 18px;
++  place-items: center;
++  border: 1px solid currentColor;
++  border-radius: 50%;
++  content: "✓";
++  font-size: 11px;
++  font-weight: 900;
++  line-height: 1;
++  opacity: 0;
++  transform: translateY(-50%) scale(0.8);
++  transition: opacity 0.16s ease, transform 0.16s ease;
++}
++
++.asbo__decoration-options input:checked + span {
++  border-color: var(--asbo-gold);
++  box-shadow: inset 0 0 0 1px var(--asbo-gold), 0 4px 12px rgba(17, 25, 45, 0.14);
++}
++
++.asbo__decoration-options input:checked + span::after {
++  color: var(--asbo-gold);
++  opacity: 1;
++  transform: translateY(-50%) scale(1);
++}
++
++@media (max-width: 767px) {
++  .asbo__subcategory-filter {
++    padding: 12px;
++  }
++
++  .asbo__subcategory-filter-options {
++    flex-wrap: nowrap;
++    margin-inline: -2px;
++    padding: 2px;
++    overflow-x: auto;
++    scrollbar-width: thin;
++    -webkit-overflow-scrolling: touch;
++  }
++
++  .asbo__subcategory-filter-options button {
++    flex: 0 0 auto;
++    min-height: 38px;
++  }
++
++  .asbo__product-meta {
++    gap: 3px 5px;
++  }
++}
++
+ CSS;
+     }
+ 
+@@ -4562,6 +4795,37 @@
+     scheduleIdleCue();
+ 
+     root.addEventListener('click', (event) => {
++      const filterButton = event.target.closest('[data-subcategory-filter-value]');
++      if (filterButton) {
++        const value = filterButton.dataset.subcategoryFilterValue || 'all';
++        const filter = filterButton.closest('[data-subcategory-filter]');
++
++        filter?.querySelectorAll('[data-subcategory-filter-value]').forEach((button) => {
++          const active = button === filterButton;
++          button.classList.toggle('is-active', active);
++          button.setAttribute('aria-pressed', String(active));
++        });
++
++        root.querySelectorAll('[data-product]').forEach((productEl) => {
++          const slugs = (productEl.dataset.subcategories || '').split(/\s+/).filter(Boolean);
++          const visible = value === 'all' || slugs.includes(value);
++
++          if (!visible) {
++            const openTrigger = productEl.querySelector('.asbo__product-trigger[aria-expanded="true"]');
++            if (openTrigger) {
++              openTrigger.setAttribute('aria-expanded', 'false');
++              const icon = openTrigger.querySelector('.asbo__product-icon');
++              if (icon) icon.textContent = '+';
++              productEl.classList.remove('is-open');
++              animatePanel(openTrigger.nextElementSibling, false);
++            }
++          }
++
++          productEl.hidden = !visible;
++        });
++        return;
++      }
++
+       const trigger = event.target.closest('.asbo__product-trigger');
+       if (trigger) {
+         const panel = trigger.nextElementSibling;
+ diff -ruN a/block/block.json b/block/block.json
+--- a/block/block.json	2026-08-25 01:29:48.000000000 +0000
++++ b/block/block.json	2026-08-25 03:16:16.353970798 +0000
+@@ -2,7 +2,7 @@
+   "$schema": "https://schemas.wp.org/trunk/block.json",
+   "apiVersion": 3,
+   "name": "all-star/bulk-order",
+-  "version": "1.1.5",
++  "version": "1.1.6",
+   "title": "All Star Bulk Order",
+   "category": "widgets",
+   "icon": "products",
