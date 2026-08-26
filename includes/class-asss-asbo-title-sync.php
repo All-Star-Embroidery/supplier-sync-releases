@@ -1,0 +1,193 @@
+<?php
+if (!defined('ABSPATH')) exit;
+
+/**
+ * Keeps the Supplier Sync-owned ASBO display name aligned with the
+ * customer-facing WooCommerce product title selected by Supplier Sync.
+ *
+ * This intentionally does not own ASBO pricing or cart behavior. It only
+ * repairs the compatibility field Supplier Sync already populates during
+ * supplier imports: _asbo_display_name.
+ */
+final class ASSS_ASBO_Title_Sync {
+    private const MIGRATION_OPTION = 'asss_v2029_asbo_display_titles_migrated';
+    private const MANAGED_META = '_asss_managed_asbo_display_name';
+
+    public static function init(): void {
+        // v2.0.28 normalizes the Woo title at priority 42. Run directly
+        // after it so new imports expose the same title in ASBO.
+        add_action('asss_product_synced', [self::class, 'sync_product'], 43, 2);
+        // Existing-product title repair in v2.0.28 runs at admin_init 45.
+        // Repair ASBO display names immediately after that migration.
+        add_action('admin_init', [self::class, 'migrate_existing_products'], 46);
+    }
+
+    public static function migrate_existing_products(): void {
+        if (!current_user_can('manage_woocommerce')) return;
+        if ((string)get_option(self::MIGRATION_OPTION, '') === 'yes') return;
+
+        $ids = get_posts([
+            'post_type'      => 'product',
+            'post_status'    => 'any',
+            'fields'         => 'ids',
+            'posts_per_page' => -1,
+            'no_found_rows'  => true,
+            'meta_query'     => [
+                'relation' => 'OR',
+                ['key' => '_asss_sanmar_style',   'compare' => 'EXISTS'],
+                ['key' => '_asss_ss_style',       'compare' => 'EXISTS'],
+                ['key' => '_asss_momentec_style', 'compare' => 'EXISTS'],
+            ],
+        ]);
+
+        $changed = 0;
+        $preserved = 0;
+        foreach ((array)$ids as $product_id) {
+            $result = self::sync_one((int)$product_id, 'v2.0.29-migration');
+            if ($result === 'changed') $changed++;
+            if ($result === 'preserved') $preserved++;
+        }
+
+        update_option(self::MIGRATION_OPTION, 'yes', false);
+        self::log('v2.0.29 ASBO display title migration complete', [
+            'products' => count((array)$ids),
+            'display_names_changed' => $changed,
+            'manual_display_names_preserved' => $preserved,
+        ]);
+    }
+
+    public static function sync_product(int $product_id, string $supplier = ''): void {
+        self::sync_one($product_id, $supplier ?: 'sync');
+    }
+
+    private static function sync_one(int $product_id, string $context): string {
+        if ($product_id < 1) return 'skipped';
+        $product = wc_get_product($product_id);
+        if (!$product instanceof WC_Product) return 'skipped';
+
+        $target = trim((string)$product->get_name('edit'));
+        if ($target === '') return 'skipped';
+
+        $asbo = trim((string)$product->get_meta('_asbo_display_name'));
+        $previous = trim((string)$product->get_meta(self::MANAGED_META));
+        $managed_woo = trim((string)$product->get_meta('_asss_managed_title'));
+        $canonical_woo = trim((string)$product->get_meta('_asss_canonical_title'));
+
+        // Once v2.0.29 has marked this field as Supplier Sync-managed,
+        // any later merchant edit takes ownership and is left alone.
+        if ($previous !== '' && $asbo !== $previous && $asbo !== $target) {
+            self::log('Preserved merchant-owned ASBO display name', [
+                'product_id' => $product_id,
+                'context' => $context,
+                'current' => $asbo,
+                'proposed' => $target,
+            ]);
+            return 'preserved';
+        }
+
+        $safe = $asbo === ''
+            || ($previous !== '' && $asbo === $previous)
+            || (($managed_woo === $target || $canonical_woo === $target) && $asbo === $target)
+            || self::is_known_legacy_richardson_112_title($product_id, $asbo)
+            || in_array($asbo, self::raw_supplier_titles($product_id), true);
+
+        if (!$safe) {
+            self::log('Preserved merchant-owned ASBO display name', [
+                'product_id' => $product_id,
+                'context' => $context,
+                'current' => $asbo,
+                'proposed' => $target,
+            ]);
+            return 'preserved';
+        }
+
+        if ($asbo === $target) {
+            if ($previous !== $target) {
+                $product->update_meta_data(self::MANAGED_META, $target);
+                $product->save();
+            }
+            return 'unchanged';
+        }
+
+        $before = $asbo;
+        $product->update_meta_data('_asbo_display_name', $target);
+        $product->update_meta_data(self::MANAGED_META, $target);
+        $product->save();
+
+        self::log('Aligned Supplier Sync-owned ASBO display name', [
+            'product_id' => $product_id,
+            'context' => $context,
+            'before' => $before,
+            'after' => $target,
+        ]);
+        return 'changed';
+    }
+
+    /**
+     * Pull only from WordPress' normalized local supplier caches. These
+     * methods do not call S&S or Momentec live APIs from WordPress.
+     */
+    private static function raw_supplier_titles(int $product_id): array {
+        $titles = [];
+        if (!class_exists('ASSS_Plugin')) return $titles;
+        $plugin = ASSS_Plugin::instance();
+
+        $ss_brand_id = absint(get_post_meta($product_id, '_asss_ss_brand_id', true));
+        $ss_style_id = absint(get_post_meta($product_id, '_asss_ss_style_id', true));
+        if ($ss_brand_id > 0 && $ss_style_id > 0 && isset($plugin->ss)) {
+            $data = $plugin->ss->style_product($ss_brand_id, $ss_style_id);
+            if (!is_wp_error($data) && is_array($data)) {
+                foreach (['supplier_title','title'] as $key) {
+                    $value = trim((string)($data[$key] ?? ''));
+                    if ($value !== '') $titles[] = $value;
+                }
+            }
+        }
+
+        $momentec_style = trim((string)get_post_meta($product_id, '_asss_momentec_style', true));
+        if ($momentec_style !== '' && isset($plugin->momentec)) {
+            $data = $plugin->momentec->style_product($momentec_style);
+            if (!is_wp_error($data) && is_array($data)) {
+                foreach (['supplier_title','title'] as $key) {
+                    $value = trim((string)($data[$key] ?? ''));
+                    if ($value !== '') $titles[] = $value;
+                }
+            }
+        }
+
+        return array_values(array_unique(array_filter(array_map('sanitize_text_field', $titles))));
+    }
+
+    private static function is_known_legacy_richardson_112_title(int $product_id, string $title): bool {
+        if ($title === '') return false;
+        $is_112 = false;
+        foreach ([
+            ['_asss_sanmar_brand','_asss_sanmar_style'],
+            ['_asss_ss_brand','_asss_ss_style'],
+            ['_asss_momentec_brand','_asss_momentec_style'],
+        ] as [$brand_key, $style_key]) {
+            $brand = strtolower((string)get_post_meta($product_id, $brand_key, true));
+            $style = strtolower((string)get_post_meta($product_id, $style_key, true));
+            $brand = (string)preg_replace('/[^a-z0-9]+/i', '', $brand);
+            $style = (string)preg_replace('/[^a-z0-9]+/i', '', $style);
+            if (str_contains($brand, 'richardson') && $style === '112') {
+                $is_112 = true;
+                break;
+            }
+        }
+        if (!$is_112) return false;
+        return in_array($title, [
+            'Snapback Trucker Cap',
+            'Weekender Trucker Cap',
+            'Snapback Trucker Cap (Richardson 112)',
+            'Richardson 112 – Snapback Trucker Cap',
+            'Richardson 112 - Snapback Trucker Cap',
+        ], true);
+    }
+
+    private static function log(string $message, array $context = []): void {
+        if (class_exists('ASSS_Logger')) ASSS_Logger::log($message, 'info', $context);
+    }
+}
+
+ASSS_ASBO_Title_Sync::init();

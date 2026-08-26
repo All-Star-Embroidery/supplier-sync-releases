@@ -4,7 +4,7 @@ Tags: woocommerce, supplier, inventory, sanmar, ssactivewear, github-actions
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 2.0.28
+Stable tag: 2.0.29
 License: Proprietary
 
 Curated multi-supplier-to-WooCommerce synchronization for All Star. SanMar and S&S Activewear connectors included.
@@ -40,6 +40,14 @@ Core V2 behavior:
 6. Use Suppliers -> Add Products to import new styles or explicitly link a second supplier to an existing Brand + Style product.
 
 == Changelog ==
+
+= 2.0.29 =
+* Keeps Supplier Sync-owned ASBO display names aligned with the canonical WooCommerce product title created by v2.0.28.
+* Repairs existing generic S&S Activewear and Momentec ASBO row names from the normalized local supplier cache, including Richardson 112 legacy names such as Weekender Trucker Cap and Snapback Trucker Cap.
+* New supplier imports receive the corrected _asbo_display_name immediately after Supplier Sync title normalization.
+* Manual/custom ASBO display names are preserved when they do not match a Supplier Sync-managed or raw supplier title.
+* This release changes title display compatibility only. ASBO pricing/cart logic, Woo pricing, supplier costs, inventory, exact variation matching, taxonomy, media, shipping weights, and GitHub worker schedules are unchanged.
+
 
 = 2.0.28 =
 * Makes generic S&S Activewear and Momentec storefront titles specific by adding missing brand/style identity.
