@@ -4,7 +4,7 @@ Tags: woocommerce, supplier, inventory, sanmar, ssactivewear, github-actions
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 2.0.27
+Stable tag: 2.0.28
 License: Proprietary
 
 Curated multi-supplier-to-WooCommerce synchronization for All Star. SanMar and S&S Activewear connectors included.
@@ -40,6 +40,13 @@ Core V2 behavior:
 6. Use Suppliers -> Add Products to import new styles or explicitly link a second supplier to an existing Brand + Style product.
 
 == Changelog ==
+
+= 2.0.28 =
+* Makes generic S&S Activewear and Momentec storefront titles specific by adding missing brand/style identity.
+* Preserves supplier titles that already contain a useful brand name, such as Delta or Comfort Colors product names.
+* Changes the Richardson 112 canonical title to `Richardson 112 – Snapback Trucker Cap` so the exact model is immediately visible.
+* Adds a one-time title-only migration for existing Supplier Sync products while preserving merchant-edited/custom titles.
+* Raw supplier title wording is retained by the GitHub normalizers; pricing, inventory, variations, media, taxonomy, and ASBO behavior are unchanged.
 
 = 2.0.27 =
 * Changes Supplier Sync-managed WooCommerce Regular Price from verified unit_buy_price + $20 to verified unit_buy_price + $23.
