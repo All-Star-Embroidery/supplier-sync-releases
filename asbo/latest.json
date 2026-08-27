@@ -1,13 +1,13 @@
 {
   "name": "All Star Bulk Order Block",
   "slug": "all-star-bulk-order-block",
-  "version": "1.1.7",
-  "download_url": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/asbo-v1.1.7/all-star-bulk-order-block-1.1.7.zip",
-  "homepage": "https://github.com/rolejarczyk/ASE.SupplierSync-Releases/tree/main/asbo",
+  "version": "1.1.8",
+  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.8/all-star-bulk-order-block-1.1.8.zip",
+  "homepage": "https://github.com/All-Star-Embroidery/asbo-releases",
   "requires": "6.5",
   "tested": "6.8",
   "requires_php": "7.4",
-  "last_updated": "2026-08-25 04:05:06 +0000",
+  "last_updated": "2026-08-27 00:48:00 +0000",
   "description": "All Star Embroidery Gutenberg bulk-order workflow with WooCommerce and ASE Supplier Sync compatibility.",
-  "changelog": "<h4>1.1.7</h4><ul><li>Adds a subtle Details &amp; sizing chip directly to collapsed product rows.</li><li>The chip opens the existing product details and size-information modal without expanding the pricing accordion.</li><li>Uses a low-contrast neutral treatment with navy text, soft gray border, and restrained gold keyboard focus.</li><li>Keeps the accordion row and details chip as separate native buttons for correct keyboard and pointer behavior.</li><li>Removes the redundant details link from inside the expanded pricing panel.</li><li>No pricing, Supplier Sync, cart, artwork, savings, or checkout calculations changed.</li></ul>"
+  "changelog": "<h4>1.1.8</h4><ul><li>Fixes overlapping pricing-matrix values on tablet and mobile by preserving readable column widths and enabling controlled horizontal scrolling.</li><li>Keeps the Decoration method column visible while customers swipe across quantity tiers.</li><li>Migrates future ASBO updates to the standalone All-Star-Embroidery/asbo-releases repository.</li><li>No customer prices, quantity thresholds, Supplier Sync logic, cart calculations, savings, artwork, or checkout behavior changed.</li></ul>"
 }
