@@ -92,7 +92,7 @@ jobs:
           grep -q 'Version: 2.0.30' all-star-supplier-sync.php
           grep -q "define('ASSS_VERSION', '2.0.30');" all-star-supplier-sync.php
           grep -q 'migrate_global_apparel_tag_v2030' includes/class-asss-importer.php
-          grep -Fq "$new_tags[] = 'Apparel';" includes/class-asss-importer.php || grep -Fq "\$new_tags[] = 'Apparel';" includes/class-asss-importer.php
+          grep -Fq "\$new_tags[] = 'Apparel';" includes/class-asss-importer.php
           find . -type f -name '*.php' -print0 | xargs -0 -n1 php -l >/tmp/php-lint.txt
           cat /tmp/php-lint.txt
 
