@@ -41,52 +41,46 @@ jobs:
           action_anchor = "        add_action('admin_init', [$this, 'migrate_specific_storefront_titles_v2028'], 45);\n"
           if text.count(action_anchor) != 1:
               raise SystemExit('Could not locate v2.0.28 migration action anchor exactly once.')
-          text = text.replace(
-              action_anchor,
-              action_anchor + "        add_action('admin_init', [$this, 'migrate_global_apparel_tag_v2030'], 46);\n",
-              1,
-          )
+          text = text.replace(action_anchor, action_anchor + "        add_action('admin_init', [$this, 'migrate_global_apparel_tag_v2030'], 46);\n", 1)
 
           tag_anchor = "        if (!in_array($supplier,['sanmar','ss','momentec'],true)) return;\n        $new_tags = array_values(array_unique(array_filter(array_map(static fn($v)=>trim(sanitize_text_field((string)$v)), $new_tags))));\n"
           if text.count(tag_anchor) != 1:
               raise SystemExit('Could not locate supplier discovery-tag normalization anchor exactly once.')
-          text = text.replace(
-              tag_anchor,
-              "        if (!in_array($supplier,['sanmar','ss','momentec'],true)) return;\n        // Global storefront inclusion rule: every Supplier Sync-managed product gets Apparel.\n        $new_tags[] = 'Apparel';\n        $new_tags = array_values(array_unique(array_filter(array_map(static fn($v)=>trim(sanitize_text_field((string)$v)), $new_tags))));\n",
-              1,
-          )
+          text = text.replace(tag_anchor, "        if (!in_array($supplier,['sanmar','ss','momentec'],true)) return;\n        // Global storefront inclusion rule: every Supplier Sync-managed product gets Apparel.\n        $new_tags[] = 'Apparel';\n        $new_tags = array_values(array_unique(array_filter(array_map(static fn($v)=>trim(sanitize_text_field((string)$v)), $new_tags))));\n", 1)
 
           migration_anchor = "    /** v2.0.28: repair supplier-generic storefront titles without overwriting merchant edits. */\n"
           if text.count(migration_anchor) != 1:
               raise SystemExit('Could not locate v2.0.28 migration method anchor exactly once.')
-          migration = '''    /** v2.0.30: ensure every Supplier Sync-linked product appears in the Apparel storefront collection. */
-    public function migrate_global_apparel_tag_v2030(): void {
-        if (!current_user_can('manage_woocommerce')) return;
-        if ((string)get_option('asss_v2030_global_apparel_tag_migrated','') === 'yes') return;
-        $ids = get_posts([
-            'post_type'=>'product','post_status'=>'any','fields'=>'ids','posts_per_page'=>-1,'no_found_rows'=>true,
-            'meta_query'=>['relation'=>'OR',
-                ['key'=>'_asss_sanmar_style','compare'=>'EXISTS'],
-                ['key'=>'_asss_ss_style','compare'=>'EXISTS'],
-                ['key'=>'_asss_momentec_style','compare'=>'EXISTS'],
-            ],
-        ]);
-        $processed = 0;
-        $failed = 0;
-        foreach ((array)$ids as $product_id) {
-            $product_id = (int)$product_id;
-            if ($product_id < 1) continue;
-            $result = wp_set_object_terms($product_id, ['Apparel'], 'product_tag', true);
-            if (is_wp_error($result)) { $failed++; continue; }
-            $processed++;
-        }
-        update_option('asss_v2030_global_apparel_tag_migrated','yes',false);
-        ASSS_Logger::log('v2.0.30 global Apparel tag migration complete','info',[
-            'products'=>$processed,'failed'=>$failed,'tag'=>'Apparel',
-        ]);
-    }
-
-'''
+          migration_lines = [
+              "    /** v2.0.30: ensure every Supplier Sync-linked product appears in the Apparel storefront collection. */",
+              "    public function migrate_global_apparel_tag_v2030(): void {",
+              "        if (!current_user_can('manage_woocommerce')) return;",
+              "        if ((string)get_option('asss_v2030_global_apparel_tag_migrated','') === 'yes') return;",
+              "        $ids = get_posts([",
+              "            'post_type'=>'product','post_status'=>'any','fields'=>'ids','posts_per_page'=>-1,'no_found_rows'=>true,",
+              "            'meta_query'=>['relation'=>'OR',",
+              "                ['key'=>'_asss_sanmar_style','compare'=>'EXISTS'],",
+              "                ['key'=>'_asss_ss_style','compare'=>'EXISTS'],",
+              "                ['key'=>'_asss_momentec_style','compare'=>'EXISTS'],",
+              "            ],",
+              "        ]);",
+              "        $processed = 0;",
+              "        $failed = 0;",
+              "        foreach ((array)$ids as $product_id) {",
+              "            $product_id = (int)$product_id;",
+              "            if ($product_id < 1) continue;",
+              "            $result = wp_set_object_terms($product_id, ['Apparel'], 'product_tag', true);",
+              "            if (is_wp_error($result)) { $failed++; continue; }",
+              "            $processed++;",
+              "        }",
+              "        update_option('asss_v2030_global_apparel_tag_migrated','yes',false);",
+              "        ASSS_Logger::log('v2.0.30 global Apparel tag migration complete','info',[",
+              "            'products'=>$processed,'failed'=>$failed,'tag'=>'Apparel',",
+              "        ]);",
+              "    }",
+              "",
+          ]
+          migration = "\n".join(migration_lines) + "\n"
           text = text.replace(migration_anchor, migration + migration_anchor, 1)
           path.write_text(text, encoding='utf-8')
           PY
@@ -97,8 +91,8 @@ jobs:
           set -euo pipefail
           grep -q 'Version: 2.0.30' all-star-supplier-sync.php
           grep -q "define('ASSS_VERSION', '2.0.30');" all-star-supplier-sync.php
-          grep -q "migrate_global_apparel_tag_v2030" includes/class-asss-importer.php
-          grep -q "\$new_tags\[\] = 'Apparel';" includes/class-asss-importer.php
+          grep -q 'migrate_global_apparel_tag_v2030' includes/class-asss-importer.php
+          grep -Fq "$new_tags[] = 'Apparel';" includes/class-asss-importer.php || grep -Fq "\$new_tags[] = 'Apparel';" includes/class-asss-importer.php
           find . -type f -name '*.php' -print0 | xargs -0 -n1 php -l >/tmp/php-lint.txt
           cat /tmp/php-lint.txt
 
@@ -111,11 +105,9 @@ jobs:
           git switch -c supplier-sync-v2.0.30-source
           git add all-star-supplier-sync.php includes/class-asss-importer.php
           git commit -m 'Supplier Sync v2.0.30: add global Apparel tag'
-          SOURCE_SHA=$(git rev-parse HEAD)
           git push origin HEAD:refs/heads/supplier-sync-v2.0.30-source
           git tag -a v2.0.30 -m 'All Star Supplier Sync v2.0.30'
           git push origin refs/tags/v2.0.30
-          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
 
       - name: Build and validate WordPress ZIP
         shell: bash
@@ -123,8 +115,7 @@ jobs:
           set -euo pipefail
           rm -rf /tmp/asss-package /tmp/all-star-supplier-sync-2.0.30.zip
           mkdir -p /tmp/asss-package/all-star-supplier-sync
-          rsync -a ./ /tmp/asss-package/all-star-supplier-sync/ \
-            --exclude='.git' --exclude='.github' --exclude='*.zip' --exclude='RELEASE-*.md' --exclude='.release-staging' --exclude='MOMENTEC-API-GROUNDWORK.md'
+          rsync -a ./ /tmp/asss-package/all-star-supplier-sync/ --exclude='.git' --exclude='.github' --exclude='*.zip' --exclude='RELEASE-*.md' --exclude='.release-staging' --exclude='MOMENTEC-API-GROUNDWORK.md'
           (cd /tmp/asss-package && zip -qr /tmp/all-star-supplier-sync-2.0.30.zip all-star-supplier-sync)
           unzip -t /tmp/all-star-supplier-sync-2.0.30.zip >/dev/null
           unzip -l /tmp/all-star-supplier-sync-2.0.30.zip | grep -q 'all-star-supplier-sync/all-star-supplier-sync.php'
@@ -137,17 +128,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          NOTES=$(mktemp)
-          cat > "$NOTES" <<'EOF'
-          Supplier Sync v2.0.30
-
-          - Adds the WooCommerce product tag `Apparel` to every product managed by Supplier Sync across SanMar, S&S Activewear, and Momentec.
-          - New imports and future supplier syncs retain `Apparel` through the existing per-supplier discovery-tag ownership system.
-          - Includes a one-time admin migration that adds `Apparel` to all existing products linked by SanMar, S&S, or Momentec style metadata.
-          - The migration is additive and preserves all merchant/manual tags and other supplier discovery tags.
-          - Products outside Supplier Sync, including manually managed varsity jackets, are not targeted by the migration.
-          - No changes to pricing, inventory, variation matching, media, categories, ASBO calculations, or GitHub Actions schedules.
-          EOF
-          gh release create v2.0.30 /tmp/all-star-supplier-sync-2.0.30.zip \
-            --title 'All Star Supplier Sync v2.0.30' \
-            --notes-file "$NOTES"
+          printf '%s\n' \
+            'Supplier Sync v2.0.30' \
+            '' \
+            '- Adds the WooCommerce product tag `Apparel` to every product managed by Supplier Sync across SanMar, S&S Activewear, and Momentec.' \
+            '- New imports and future supplier syncs retain `Apparel` through the existing per-supplier discovery-tag ownership system.' \
+            '- Includes a one-time admin migration that adds `Apparel` to all existing products linked by SanMar, S&S, or Momentec style metadata.' \
+            '- The migration is additive and preserves all merchant/manual tags and other supplier discovery tags.' \
+            '- Products outside Supplier Sync, including manually managed varsity jackets, are not targeted by the migration.' \
+            '- No changes to pricing, inventory, variation matching, media, categories, ASBO calculations, or GitHub Actions schedules.' \
+            > /tmp/release-notes.md
+          gh release create v2.0.30 /tmp/all-star-supplier-sync-2.0.30.zip --title 'All Star Supplier Sync v2.0.30' --notes-file /tmp/release-notes.md
