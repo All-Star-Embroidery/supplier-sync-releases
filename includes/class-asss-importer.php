@@ -27,6 +27,7 @@ class ASSS_Importer {
         add_action('admin_init', [$this, 'migrate_standard_supplier_pricing_v2026'], 43);
         add_action('admin_init', [$this, 'migrate_supplier_markup_v2027'], 44);
         add_action('admin_init', [$this, 'migrate_specific_storefront_titles_v2028'], 45);
+        add_action('admin_init', [$this, 'migrate_global_apparel_tag_v2030'], 46);
         add_action('asss_product_synced', [$this, 'sync_product_discovery_taxonomy'], 40, 2);
         add_action('asss_product_synced', [$this, 'normalize_canonical_product_title'], 42, 2);
         add_action('asss_product_synced', [$this, 'normalize_product_storefront_sizes'], 45, 2);
@@ -520,6 +521,8 @@ class ASSS_Importer {
     private function sync_supplier_discovery_tags(int $product_id, array $new_tags, string $supplier): void {
         $supplier = sanitize_key($supplier);
         if (!in_array($supplier,['sanmar','ss','momentec'],true)) return;
+        // Global storefront inclusion rule: every Supplier Sync-managed product gets Apparel.
+        $new_tags[] = 'Apparel';
         $new_tags = array_values(array_unique(array_filter(array_map(static fn($v)=>trim(sanitize_text_field((string)$v)), $new_tags))));
         natcasesort($new_tags); $new_tags = array_values($new_tags);
 
@@ -3483,6 +3486,33 @@ class ASSS_Importer {
         update_option('asss_v2027_supplier_markup_migrated','yes',false);
         ASSS_Logger::log('v2.0.27 updated Supplier Sync-managed storefront markup to unit buy + $23','info',[
             'products'=>$products,'markup'=>23,
+        ]);
+    }
+
+    /** v2.0.30: ensure every Supplier Sync-linked product appears in the Apparel storefront collection. */
+    public function migrate_global_apparel_tag_v2030(): void {
+        if (!current_user_can('manage_woocommerce')) return;
+        if ((string)get_option('asss_v2030_global_apparel_tag_migrated','') === 'yes') return;
+        $ids = get_posts([
+            'post_type'=>'product','post_status'=>'any','fields'=>'ids','posts_per_page'=>-1,'no_found_rows'=>true,
+            'meta_query'=>['relation'=>'OR',
+                ['key'=>'_asss_sanmar_style','compare'=>'EXISTS'],
+                ['key'=>'_asss_ss_style','compare'=>'EXISTS'],
+                ['key'=>'_asss_momentec_style','compare'=>'EXISTS'],
+            ],
+        ]);
+        $processed = 0;
+        $failed = 0;
+        foreach ((array)$ids as $product_id) {
+            $product_id = (int)$product_id;
+            if ($product_id < 1) continue;
+            $result = wp_set_object_terms($product_id, ['Apparel'], 'product_tag', true);
+            if (is_wp_error($result)) { $failed++; continue; }
+            $processed++;
+        }
+        update_option('asss_v2030_global_apparel_tag_migrated','yes',false);
+        ASSS_Logger::log('v2.0.30 global Apparel tag migration complete','info',[
+            'products'=>$processed,'failed'=>$failed,'tag'=>'Apparel',
         ]);
     }
 
