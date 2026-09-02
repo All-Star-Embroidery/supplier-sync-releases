@@ -1502,7 +1502,18 @@ if ($active_job !== '') {
                 if(job.status==="queued"){
                     if(detail) detail.textContent="Waiting for WooCommerce Action Scheduler. You may leave this page.";
                 }else if(job.status==="running"){
-                    if(detail) detail.textContent="Running in the background. The browser is no longer holding the import request open.";
+                    if(job.total>0){
+                        if(title) title.textContent="Supplier Sync — "+job.percent+"%";
+                        if(detail) detail.textContent=(job.current||0)+" of "+job.total+" exact variations processed. Safe to leave this page.";
+                        if(bar){bar.style.animation="none";bar.style.width=Math.max(2,job.percent)+"%";bar.style.transform="none";bar.style.background="#2271b1";}
+                    }else if(detail) detail.textContent="Running in the background. Safe to leave this page.";
+                }else if(job.status==="stalled"){
+                    stopped=true;
+                    if(title) title.textContent="Supplier Sync may be stalled";
+                    if(message) message.textContent="No progress heartbeat has been received for more than 4 minutes.";
+                    if(detail) detail.textContent="Do not start a duplicate import yet. Check Supplier Sync logs / Action Scheduler before retrying.";
+                    if(bar){bar.style.animation="none";bar.style.width="100%";bar.style.transform="none";bar.style.background="#dba617";}
+                    return;
                 }else if(job.status==="completed"){
                     stopped=true;
                     if(title) title.textContent="Supplier Sync complete";

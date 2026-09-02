@@ -12,6 +12,7 @@ if (!defined('ABSPATH')) exit;
 class ASSS_Background_Jobs {
     private ASSS_Importer $importer;
     private ASSS_Sync $sync;
+    private string $current_job_id = '';
     private const GROUP = 'all-star-supplier-sync';
     private const TTL = 172800;
 
@@ -19,8 +20,24 @@ class ASSS_Background_Jobs {
         $this->importer = $importer;
         $this->sync = $sync;
         add_action('asss_run_background_job', [$this, 'run_job'], 10, 1);
+        add_action('asss_import_progress', [$this, 'capture_progress'], 10, 4);
         add_action('wp_ajax_asss_job_status', [$this, 'ajax_status']);
     }
+
+
+public function capture_progress(string $stage, int $current, int $total, string $message = ''): void {
+    if ($this->current_job_id === '') return;
+    $job = $this->get_job($this->current_job_id);
+    if (!$job || (string)($job['status'] ?? '') !== 'running') return;
+    $current = max(0, $current); $total = max(0, $total);
+    $job['stage'] = sanitize_key($stage);
+    $job['progress_current'] = $current;
+    $job['progress_total'] = $total;
+    $job['progress_percent'] = $total > 0 ? min(100, (int)floor(($current / $total) * 100)) : 0;
+    $job['heartbeat_at'] = time();
+    if ($message !== '') $job['message'] = sanitize_text_field($message);
+    $this->save_job($job);
+}
 
     private function key(string $job_id): string {
         return 'asss_job_' . sanitize_key($job_id);
@@ -62,6 +79,11 @@ class ASSS_Background_Jobs {
             'redirect_url' => '',
             'action_id' => 0,
             'engine' => '',
+            'stage' => 'queued',
+            'progress_current' => 0,
+            'progress_total' => 0,
+            'progress_percent' => 0,
+            'heartbeat_at' => time(),
         ];
         $this->save_job($job);
 
@@ -111,7 +133,10 @@ class ASSS_Background_Jobs {
 
         $job['status'] = 'running';
         $job['started_at'] = time();
-        $job['message'] = 'Background worker is processing the supplier product…';
+        $job['heartbeat_at'] = time();
+        $job['stage'] = 'starting';
+        $job['message'] = 'Background worker is preparing the supplier product…';
+        $this->current_job_id = $job_id;
         $this->save_job($job);
 
         $type = (string)($job['type'] ?? '');
@@ -169,10 +194,13 @@ class ASSS_Background_Jobs {
                     $result = new WP_Error('asss_job_type', 'Unsupported Supplier Sync background job.');
             }
         } catch (Throwable $e) {
-            $this->mark_failed($job, $e->getMessage());
+            $this->current_job_id = '';
+            $this->mark_failed($this->get_job($job_id) ?: $job, $e->getMessage());
             return;
         }
 
+        $this->current_job_id = '';
+        $job = $this->get_job($job_id) ?: $job;
         if (is_wp_error($result)) {
             $this->mark_failed($job, $result->get_error_message());
             return;
@@ -185,6 +213,9 @@ class ASSS_Background_Jobs {
         }
 
         $job['status'] = 'completed';
+        $job['stage'] = 'complete';
+        $job['progress_percent'] = 100;
+        $job['heartbeat_at'] = time();
         $job['finished_at'] = time();
         $job['product_id'] = $product_id;
 
@@ -238,14 +269,23 @@ class ASSS_Background_Jobs {
         $end = $finished ?: time();
         $elapsed = max(0, $end - ($started ?: $created));
 
-        wp_send_json_success([
-            'id' => (string)$job['id'],
-            'type' => (string)$job['type'],
-            'status' => (string)$job['status'],
-            'message' => (string)$job['message'],
-            'elapsed' => $elapsed,
-            'product_id' => (int)($job['product_id'] ?? 0),
-            'redirect_url' => (string)($job['redirect_url'] ?? ''),
-        ]);
+$status = (string)$job['status'];
+$heartbeat = (int)($job['heartbeat_at'] ?? ($started ?: $created));
+$heartbeat_age = max(0, time() - $heartbeat);
+if ($status === 'running' && $heartbeat_age >= 240) $status = 'stalled';
+wp_send_json_success([
+    'id' => (string)$job['id'],
+    'type' => (string)$job['type'],
+    'status' => $status,
+    'message' => (string)$job['message'],
+    'stage' => (string)($job['stage'] ?? ''),
+    'current' => (int)($job['progress_current'] ?? 0),
+    'total' => (int)($job['progress_total'] ?? 0),
+    'percent' => (int)($job['progress_percent'] ?? 0),
+    'heartbeat_age' => $heartbeat_age,
+    'elapsed' => $elapsed,
+    'product_id' => (int)($job['product_id'] ?? 0),
+    'redirect_url' => (string)($job['redirect_url'] ?? ''),
+]);
     }
 }

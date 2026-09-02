@@ -1896,7 +1896,11 @@ class ASSS_Importer {
             $existing[$this->variation_identity($v)] = $vid;
         }
 
+        $asss_progress_total = count($expected); $asss_progress_current = 0;
+        do_action('asss_import_progress','variations',0,$asss_progress_total,'Preparing exact SanMar variations…');
         foreach ($expected as $key => $row) {
+            $asss_progress_current++;
+            do_action('asss_import_progress','variations',$asss_progress_current,$asss_progress_total,'Processing SanMar variation '.$asss_progress_current.' of '.$asss_progress_total.'…');
             $vid = (int)($existing[$key] ?? 0);
             if (!$vid) {
                 $unique = (string)$this->sanmar->first($row, ['UNIQUE_KEY','UNIQUEKEY','PART_ID']);
@@ -3700,7 +3704,11 @@ class ASSS_Importer {
         }
 
         $created = 0; $updated = 0;
+        $asss_progress_total = count($expected); $asss_progress_current = 0;
+        do_action('asss_import_progress','variations',0,$asss_progress_total,'Preparing exact S&S variations…');
         foreach ($expected as $row) {
+            $asss_progress_current++;
+            do_action('asss_import_progress','variations',$asss_progress_current,$asss_progress_total,'Processing S&S variation '.$asss_progress_current.' of '.$asss_progress_total.'…');
             $existing = $this->find_ss_variation($product_id, (string)($row['unique_key'] ?? $row['supplier_sku_id'] ?? ''), (string)($row['color'] ?? ''), (string)($row['size'] ?? ''));
             if (!$existing && !$allow_create) continue;
             $result = $this->sync_ss_variation($product_id, $row);
@@ -4720,8 +4728,8 @@ class ASSS_Importer {
     private function reconcile_momentec_variations(int $product_id,array $rows,bool $allow_create=true): array {
         $expected=[];
         foreach($rows as $row){if(!is_array($row))continue;$color=trim((string)($row['color'] ?? $row['catalog_color'] ?? ''));$size=trim((string)($row['size'] ?? ''));if($color===''||$size==='')continue;$key=$this->canonical_combo($color,$size);$expected[$key]=$row;}
-        $created=0;$updated=0;$seen=[];
-        foreach($expected as $combo=>$row){$existing=$this->find_momentec_variation($product_id,(string)($row['unique_key'] ?? $row['sku'] ?? ''),(string)($row['color'] ?? ''),(string)($row['size'] ?? ''));if(!$existing&&!$allow_create)continue;$r=$this->sync_momentec_variation($product_id,$row);if(!empty($r['created']))$created++;elseif(!empty($r['variation_id']))$updated++;if(!empty($r['variation_id']))$seen[$combo]=(int)$r['variation_id'];}
+        $created=0;$updated=0;$seen=[];$asss_progress_total=count($expected);$asss_progress_current=0;do_action('asss_import_progress','variations',0,$asss_progress_total,'Preparing exact Momentec variations…');
+        foreach($expected as $combo=>$row){$asss_progress_current++;do_action('asss_import_progress','variations',$asss_progress_current,$asss_progress_total,'Processing Momentec variation '.$asss_progress_current.' of '.$asss_progress_total.'…');$existing=$this->find_momentec_variation($product_id,(string)($row['unique_key'] ?? $row['sku'] ?? ''),(string)($row['color'] ?? ''),(string)($row['size'] ?? ''));if(!$existing&&!$allow_create)continue;$r=$this->sync_momentec_variation($product_id,$row);if(!empty($r['created']))$created++;elseif(!empty($r['variation_id']))$updated++;if(!empty($r['variation_id']))$seen[$combo]=(int)$r['variation_id'];}
         $expected_source=[];foreach($rows as $row){$k=(string)($row['unique_key'] ?? $row['supplier_sku_id'] ?? $row['sku'] ?? '');if($k==='')$k=$this->canonical_combo((string)($row['color'] ?? ''),(string)($row['size'] ?? ''));if($k!=='')$expected_source[$k]=true;}
         $this->disable_missing_source_variations($product_id,'momentec',$expected_source);
         $missing_price=0;$missing_image=0;$missing_gallery=0;$missing_sku=0;$missing_weight=0;
