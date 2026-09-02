@@ -2,7 +2,7 @@
 /**
  * Plugin Name: All Star Supplier Sync
  * Description: Curated supplier-to-WooCommerce synchronization framework. SanMar, S&S Activewear, and Momentec production supplier connectors with full catalog browsing through GitHub Actions.
- * Version: 2.0.31
+ * Version: 2.0.32
  * Author: All Star
  * Update URI: https://github.com/rolejarczyk/ASE.SupplierSync-Releases
  * Requires at least: 6.4
@@ -13,7 +13,7 @@
 
 if (!defined('ABSPATH')) exit;
 
-define('ASSS_VERSION', '2.0.31');
+define('ASSS_VERSION', '2.0.32');
 define('ASSS_FILE', __FILE__);
 define('ASSS_DIR', plugin_dir_path(__FILE__));
 define('ASSS_URL', plugin_dir_url(__FILE__));
@@ -26,6 +26,7 @@ require_once ASSS_DIR . 'includes/class-asss-multi.php';
 require_once ASSS_DIR . 'includes/class-asss-importer.php';
 require_once ASSS_DIR . 'includes/class-asss-asbo-title-sync.php';
 require_once ASSS_DIR . 'includes/class-asss-sync.php';
+require_once ASSS_DIR . 'includes/class-asss-background-jobs.php';
 require_once ASSS_DIR . 'includes/class-asss-bridge.php';
 require_once ASSS_DIR . 'includes/class-asss-admin.php';
 require_once ASSS_DIR . 'includes/class-asss-updater.php';
@@ -38,6 +39,7 @@ final class ASSS_Plugin {
     public ASSS_MultiSupplier $multi;
     public ASSS_Importer $importer;
     public ASSS_Sync $sync;
+    public ASSS_Background_Jobs $jobs;
     public ASSS_Bridge $bridge;
     public ASSS_Admin $admin;
     public ASSS_Updater $updater;
@@ -69,9 +71,10 @@ final class ASSS_Plugin {
         $this->multi = new ASSS_MultiSupplier($this->sanmar);
         $this->importer = new ASSS_Importer($this->sanmar, $this->ss, $this->momentec, $this->multi);
         $this->sync = new ASSS_Sync($this->sanmar, $this->importer, $this->multi);
+        $this->jobs = new ASSS_Background_Jobs($this->importer, $this->sync);
         $this->bridge = new ASSS_Bridge($this->sanmar, $this->ss, $this->momentec, $this->sync);
         $this->updater = new ASSS_Updater($this->sanmar, ASSS_FILE);
-        $this->admin = new ASSS_Admin($this->sanmar, $this->ss, $this->momentec, $this->importer, $this->sync, $this->multi, $this->updater);
+        $this->admin = new ASSS_Admin($this->sanmar, $this->ss, $this->momentec, $this->importer, $this->sync, $this->multi, $this->updater, $this->jobs);
         add_action('admin_init', [$this, 'maybe_migrate_managed_asbo_pricing_v209']);
         add_action('admin_init', [$this, 'enforce_sitewide_asbo_pricing_v210'], 30);
         $this->reconcile_fallback_schedules();

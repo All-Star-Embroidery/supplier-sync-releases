@@ -9,8 +9,9 @@ class ASSS_Admin {
     private ASSS_Sync $sync;
     private ASSS_MultiSupplier $multi;
     private ASSS_Updater $updater;
+    private ASSS_Background_Jobs $jobs;
 
-    public function __construct($s, $ss, $momentec, $i, $y, $m, $u) {
+    public function __construct($s, $ss, $momentec, $i, $y, $m, $u, $jobs) {
         $this->sanmar = $s;
         $this->ss = $ss;
         $this->momentec = $momentec;
@@ -18,6 +19,7 @@ class ASSS_Admin {
         $this->sync = $y;
         $this->multi = $m;
         $this->updater = $u;
+        $this->jobs = $jobs;
         add_action('admin_menu', [$this, 'menu']);
         add_action('admin_init', [$this, 'actions']);
         add_action('add_meta_boxes', [$this, 'meta_box']);
@@ -128,31 +130,39 @@ class ASSS_Admin {
             exit;
         }
 
-        if (!empty($_POST['asss_import_style'])) {
-            check_admin_referer('asss_import');
-            $brand = sanitize_text_field(wp_unslash($_POST['brand'] ?? ''));
-            $style = sanitize_text_field(wp_unslash($_POST['style'] ?? ''));
-            $colors = array_values(array_filter(array_map('sanitize_text_field', (array)($_POST['colors'] ?? []))));
-            if (!$colors) {
-                $this->redir_import($brand, $style, '', 'Choose at least one color before importing.');
-            }
-            $r = $this->importer->import_style($brand, $style, $colors);
-            if (is_wp_error($r)) $this->redir_import($brand, $style, '', $r->get_error_message());
-            wp_safe_redirect(add_query_arg(['post' => (int)$r, 'action' => 'edit', 'asss_imported' => 1], admin_url('post.php')));
-            exit;
-        }
+if (!empty($_POST['asss_import_style'])) {
+    check_admin_referer('asss_import');
+    $brand = sanitize_text_field(wp_unslash($_POST['brand'] ?? ''));
+    $style = sanitize_text_field(wp_unslash($_POST['style'] ?? ''));
+    $colors = array_values(array_filter(array_map('sanitize_text_field', (array)($_POST['colors'] ?? []))));
+    if (!$colors) {
+        $this->redir_import($brand, $style, '', 'Choose at least one color before importing.');
+    }
+    $job = $this->jobs->enqueue('sanmar_import', [
+        'brand'=>$brand,'style'=>$style,'colors'=>$colors,
+    ], get_current_user_id());
+    if (is_wp_error($job)) $this->redir_import($brand, $style, '', $job->get_error_message());
+    wp_safe_redirect(add_query_arg([
+        'page'=>'asss-import','brand'=>$brand,'style'=>$style,'asss_job'=>$job,
+    ], admin_url('admin.php')));
+    exit;
+}
 
-        if (!empty($_POST['asss_import_ss_style'])) {
-            check_admin_referer('asss_ss_import');
-            $brand_id = absint($_POST['brand_id'] ?? 0);
-            $style_id = absint($_POST['style_id'] ?? 0);
-            $colors = array_values(array_filter(array_map('sanitize_text_field', (array)($_POST['colors'] ?? []))));
-            if (!$colors) $this->redir_ss_review($brand_id, $style_id, '', 'Choose at least one color before importing.');
-            $r = $this->importer->import_ss_style($brand_id, $style_id, $colors);
-            if (is_wp_error($r)) $this->redir_ss_review($brand_id, $style_id, '', $r->get_error_message());
-            wp_safe_redirect(add_query_arg(['post'=>(int)$r,'action'=>'edit','asss_imported'=>1], admin_url('post.php')));
-            exit;
-        }
+if (!empty($_POST['asss_import_ss_style'])) {
+    check_admin_referer('asss_ss_import');
+    $brand_id = absint($_POST['brand_id'] ?? 0);
+    $style_id = absint($_POST['style_id'] ?? 0);
+    $colors = array_values(array_filter(array_map('sanitize_text_field', (array)($_POST['colors'] ?? []))));
+    if (!$colors) $this->redir_ss_review($brand_id, $style_id, '', 'Choose at least one color before importing.');
+    $job = $this->jobs->enqueue('ss_import', [
+        'brand_id'=>$brand_id,'style_id'=>$style_id,'colors'=>$colors,
+    ], get_current_user_id());
+    if (is_wp_error($job)) $this->redir_ss_review($brand_id, $style_id, '', $job->get_error_message());
+    wp_safe_redirect(add_query_arg([
+        'page'=>'asss-ss-review','brand_id'=>$brand_id,'style_id'=>$style_id,'asss_job'=>$job,
+    ], admin_url('admin.php')));
+    exit;
+}
 
         if (!empty($_POST['asss_momentec_queue_style'])) {
             check_admin_referer('asss_momentec_catalog');
@@ -188,46 +198,58 @@ class ASSS_Admin {
             wp_safe_redirect(add_query_arg(['page'=>'asss-suppliers','supplier'=>'momentec','q'=>sanitize_text_field(wp_unslash((string)($_POST['return_q'] ?? ''))),'brand'=>sanitize_text_field(wp_unslash((string)($_POST['return_brand'] ?? ''))),'category'=>sanitize_text_field(wp_unslash((string)($_POST['return_category'] ?? ''))),'catalog_page'=>max(1,absint($_POST['return_catalog_page'] ?? 1)),'momentec_view'=>$view,'asss_msg'=>$message],admin_url('admin.php')));exit;
         }
 
-        if (!empty($_POST['asss_import_momentec_style'])) {
-            check_admin_referer('asss_momentec_import');
-            $style=sanitize_text_field(wp_unslash($_POST['style'] ?? ''));
-            $colors=array_values(array_filter(array_map('sanitize_text_field',(array)($_POST['colors'] ?? []))));
-            $r=$this->importer->import_momentec_style($style,$colors);
-            if(is_wp_error($r)){
-                wp_safe_redirect(add_query_arg(['page'=>'asss-momentec-review','style'=>$style,'asss_err'=>$r->get_error_message()],admin_url('admin.php')));exit;
-            }
-            wp_safe_redirect(add_query_arg(['post'=>(int)$r,'action'=>'edit','asss_imported'=>1],admin_url('post.php')));exit;
-        }
+if (!empty($_POST['asss_import_momentec_style'])) {
+    check_admin_referer('asss_momentec_import');
+    $style=sanitize_text_field(wp_unslash($_POST['style'] ?? ''));
+    $colors=array_values(array_filter(array_map('sanitize_text_field',(array)($_POST['colors'] ?? []))));
+    $job=$this->jobs->enqueue('momentec_import',[
+        'style'=>$style,'colors'=>$colors,
+    ],get_current_user_id());
+    if(is_wp_error($job)){
+        wp_safe_redirect(add_query_arg(['page'=>'asss-momentec-review','style'=>$style,'asss_err'=>$job->get_error_message()],admin_url('admin.php')));exit;
+    }
+    wp_safe_redirect(add_query_arg(['page'=>'asss-momentec-review','style'=>$style,'asss_job'=>$job],admin_url('admin.php')));exit;
+}
 
-        if (!empty($_POST['asss_link_momentec_existing'])) {
-            check_admin_referer('asss_momentec_import');
-            $style=sanitize_text_field(wp_unslash($_POST['style'] ?? ''));
-            $product_id=absint($_POST['product_id'] ?? 0);
-            $colors=array_values(array_filter(array_map('sanitize_text_field',(array)($_POST['colors'] ?? []))));
-            $r=$this->importer->link_momentec_style_to_product($product_id,$style,$colors);
-            if(is_wp_error($r)){
-                wp_safe_redirect(add_query_arg(['page'=>'asss-momentec-review','style'=>$style,'asss_err'=>$r->get_error_message()],admin_url('admin.php')));exit;
-            }
-            wp_safe_redirect(add_query_arg(['page'=>'asss-manage-suppliers','product_id'=>(int)$r,'asss_msg'=>'Momentec linked to the existing WooCommerce product.'],admin_url('admin.php')));exit;
-        }
+if (!empty($_POST['asss_link_momentec_existing'])) {
+    check_admin_referer('asss_momentec_import');
+    $style=sanitize_text_field(wp_unslash($_POST['style'] ?? ''));
+    $product_id=absint($_POST['product_id'] ?? 0);
+    $colors=array_values(array_filter(array_map('sanitize_text_field',(array)($_POST['colors'] ?? []))));
+    $job=$this->jobs->enqueue('momentec_link',[
+        'style'=>$style,'product_id'=>$product_id,'colors'=>$colors,
+    ],get_current_user_id());
+    if(is_wp_error($job)){
+        wp_safe_redirect(add_query_arg(['page'=>'asss-momentec-review','style'=>$style,'asss_err'=>$job->get_error_message()],admin_url('admin.php')));exit;
+    }
+    wp_safe_redirect(add_query_arg(['page'=>'asss-momentec-review','style'=>$style,'asss_job'=>$job],admin_url('admin.php')));exit;
+}
 
-        if (!empty($_POST['asss_link_ss_existing'])) {
-            check_admin_referer('asss_ss_import');
-            $brand_id=absint($_POST['brand_id'] ?? 0); $style_id=absint($_POST['style_id'] ?? 0); $product_id=absint($_POST['product_id'] ?? 0);
-            $colors=array_values(array_filter(array_map('sanitize_text_field',(array)($_POST['colors'] ?? []))));
-            $r=$this->importer->link_ss_style_to_product($product_id,$brand_id,$style_id,$colors);
-            if(is_wp_error($r))$this->redir_ss_review($brand_id,$style_id,'',$r->get_error_message());
-            wp_safe_redirect(add_query_arg(['page'=>'asss-manage-suppliers','product_id'=>(int)$r,'asss_msg'=>'S&S linked to the existing WooCommerce product.'],admin_url('admin.php'))); exit;
-        }
+if (!empty($_POST['asss_link_ss_existing'])) {
+    check_admin_referer('asss_ss_import');
+    $brand_id=absint($_POST['brand_id'] ?? 0); $style_id=absint($_POST['style_id'] ?? 0); $product_id=absint($_POST['product_id'] ?? 0);
+    $colors=array_values(array_filter(array_map('sanitize_text_field',(array)($_POST['colors'] ?? []))));
+    $job=$this->jobs->enqueue('ss_link',[
+        'brand_id'=>$brand_id,'style_id'=>$style_id,'product_id'=>$product_id,'colors'=>$colors,
+    ],get_current_user_id());
+    if(is_wp_error($job))$this->redir_ss_review($brand_id,$style_id,'',$job->get_error_message());
+    wp_safe_redirect(add_query_arg([
+        'page'=>'asss-ss-review','brand_id'=>$brand_id,'style_id'=>$style_id,'asss_job'=>$job,
+    ],admin_url('admin.php'))); exit;
+}
 
-        if (!empty($_POST['asss_link_sanmar_existing'])) {
-            check_admin_referer('asss_import');
-            $brand=sanitize_text_field(wp_unslash($_POST['brand'] ?? '')); $style=sanitize_text_field(wp_unslash($_POST['style'] ?? '')); $product_id=absint($_POST['product_id'] ?? 0);
-            $colors=array_values(array_filter(array_map('sanitize_text_field',(array)($_POST['colors'] ?? []))));
-            $r=$this->importer->link_sanmar_style_to_product($product_id,$brand,$style,$colors);
-            if(is_wp_error($r))$this->redir_import($brand,$style,'',$r->get_error_message());
-            wp_safe_redirect(add_query_arg(['page'=>'asss-manage-suppliers','product_id'=>(int)$r,'asss_msg'=>'SanMar linked to the existing WooCommerce product.'],admin_url('admin.php'))); exit;
-        }
+if (!empty($_POST['asss_link_sanmar_existing'])) {
+    check_admin_referer('asss_import');
+    $brand=sanitize_text_field(wp_unslash($_POST['brand'] ?? '')); $style=sanitize_text_field(wp_unslash($_POST['style'] ?? '')); $product_id=absint($_POST['product_id'] ?? 0);
+    $colors=array_values(array_filter(array_map('sanitize_text_field',(array)($_POST['colors'] ?? []))));
+    $job=$this->jobs->enqueue('sanmar_link',[
+        'brand'=>$brand,'style'=>$style,'product_id'=>$product_id,'colors'=>$colors,
+    ],get_current_user_id());
+    if(is_wp_error($job))$this->redir_import($brand,$style,'',$job->get_error_message());
+    wp_safe_redirect(add_query_arg([
+        'page'=>'asss-import','brand'=>$brand,'style'=>$style,'asss_job'=>$job,
+    ],admin_url('admin.php'))); exit;
+}
 
         if (!empty($_POST['asss_save_product_supplier_settings'])) {
             check_admin_referer('asss_manage_suppliers');
@@ -274,14 +296,15 @@ class ASSS_Admin {
             wp_safe_redirect(add_query_arg(['page'=>'asss-manage-suppliers','product_id'=>$product_id,'asss_msg'=>$message],admin_url('admin.php'))); exit;
         }
 
-        if (!empty($_POST['asss_quick_repair_product'])) {
-            check_admin_referer('asss_active_products');
-            $product_id = absint($_POST['product_id'] ?? 0);
-            if (!$product_id || !$this->is_active_linked_product($product_id)) $this->redir('asss-active-products', '', 'Choose a valid active linked product.');
-            $r = $this->importer->update_style($product_id);
-            if (is_wp_error($r)) $this->redir('asss-active-products', '', 'Quick repair failed: ' . $r->get_error_message());
-            $this->redir('asss-active-products', 'Quick repair finished for product #' . $product_id . '. Existing color selections were preserved.');
-        }
+if (!empty($_POST['asss_quick_repair_product'])) {
+    check_admin_referer('asss_active_products');
+    $product_id = absint($_POST['product_id'] ?? 0);
+    if (!$product_id || !$this->is_active_linked_product($product_id)) $this->redir('asss-active-products', '', 'Choose a valid active linked product.');
+    $job=$this->jobs->enqueue('quick_repair',['product_id'=>$product_id],get_current_user_id());
+    if(is_wp_error($job))$this->redir('asss-active-products','',$job->get_error_message());
+    wp_safe_redirect(add_query_arg(['page'=>'asss-active-products','asss_job'=>$job],admin_url('admin.php')));
+    exit;
+}
 
         if (!empty($_POST['asss_repair_selected_products'])) {
             check_admin_referer('asss_active_products');
@@ -1342,10 +1365,9 @@ class ASSS_Admin {
     }
 
     /**
-     * Honest progress feedback for synchronous Supplier Sync admin actions.
-     * These requests do not expose server-side percentage completion, so the
-     * UI uses an indeterminate bar, elapsed time, and stage messaging instead
-     * of inventing a fake percentage.
+     * Progress feedback for Supplier Sync admin actions. Background import jobs
+     * expose real queue/running/completed/failed state; legacy synchronous tools
+     * retain the indeterminate feedback instead of inventing a fake percentage.
      */
     private function render_progress_ui(): void {
         static $rendered = false;
@@ -1438,6 +1460,69 @@ class ASSS_Admin {
             },true);
         });
         </script>';
+
+$active_job = sanitize_key((string)($_GET['asss_job'] ?? ''));
+if ($active_job !== '') {
+    $job_nonce = wp_create_nonce('asss_job_status');
+    echo '<script>
+    document.addEventListener("DOMContentLoaded",function(){
+        const jobId=' . wp_json_encode($active_job) . ';
+        const nonce=' . wp_json_encode($job_nonce) . ';
+        const endpoint=' . wp_json_encode(admin_url('admin-ajax.php')) . ';
+        const panel=document.getElementById("asss-progress-ui");
+        const title=panel?.querySelector(".asss-progress-title");
+        const message=document.getElementById("asss-progress-message");
+        const detail=document.getElementById("asss-progress-detail");
+        const time=document.getElementById("asss-progress-time");
+        const bar=panel?.querySelector(".asss-progress-bar");
+        if(!panel) return;
+        panel.classList.add("is-active");
+        if(title) title.textContent="Supplier Sync background job";
+        if(message) message.textContent="Queued — waiting for the background worker…";
+        if(detail) detail.textContent="This job will continue even if you leave this page.";
+
+        let stopped=false;
+        function finishError(text){
+            stopped=true;
+            if(title) title.textContent="Supplier Sync needs attention";
+            if(message) message.textContent=text||"The background job failed.";
+            if(detail) detail.textContent="Nothing else will be changed by this job. You can correct the issue and retry.";
+            if(bar){bar.style.animation="none";bar.style.width="100%";bar.style.transform="none";bar.style.background="#d63638";}
+        }
+        async function poll(){
+            if(stopped) return;
+            try{
+                const url=endpoint+"?action=asss_job_status&job_id="+encodeURIComponent(jobId)+"&nonce="+encodeURIComponent(nonce);
+                const response=await fetch(url,{credentials:"same-origin",cache:"no-store"});
+                const payload=await response.json();
+                if(!payload||!payload.success){finishError(payload?.data?.message||"Could not read the background job status.");return;}
+                const job=payload.data||{};
+                if(time) time.textContent=(job.elapsed||0)+"s";
+                if(message) message.textContent=job.message||"Working…";
+                if(job.status==="queued"){
+                    if(detail) detail.textContent="Waiting for WooCommerce Action Scheduler. You may leave this page.";
+                }else if(job.status==="running"){
+                    if(detail) detail.textContent="Running in the background. The browser is no longer holding the import request open.";
+                }else if(job.status==="completed"){
+                    stopped=true;
+                    if(title) title.textContent="Supplier Sync complete";
+                    if(detail) detail.textContent="Opening the WooCommerce result…";
+                    if(bar){bar.style.animation="none";bar.style.width="100%";bar.style.transform="none";bar.style.background="#00a32a";}
+                    if(job.redirect_url){window.setTimeout(function(){window.location.href=job.redirect_url;},650);}
+                    return;
+                }else if(job.status==="failed"){
+                    finishError(job.message||"The background job failed.");
+                    return;
+                }
+            }catch(error){
+                if(detail) detail.textContent="Status connection interrupted — retrying automatically. The background job is still independent of this page.";
+            }
+            window.setTimeout(poll,1500);
+        }
+        poll();
+    });
+    </script>';
+}
     }
 
     private function wrap_end(): void {
