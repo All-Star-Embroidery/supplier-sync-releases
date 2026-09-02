@@ -1338,6 +1338,106 @@ class ASSS_Admin {
 
     private function wrap_start($title): void {
         echo '<div class="wrap"><h1>' . esc_html($title) . '</h1>';
+        $this->render_progress_ui();
+    }
+
+    /**
+     * Honest progress feedback for synchronous Supplier Sync admin actions.
+     * These requests do not expose server-side percentage completion, so the
+     * UI uses an indeterminate bar, elapsed time, and stage messaging instead
+     * of inventing a fake percentage.
+     */
+    private function render_progress_ui(): void {
+        static $rendered = false;
+        if ($rendered) return;
+        $rendered = true;
+        echo '<style>
+            #asss-progress-ui{position:fixed;top:46px;right:24px;width:min(440px,calc(100vw - 48px));z-index:100000;background:#fff;border:1px solid #c3c4c7;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.18);padding:16px 18px;display:none}
+            #asss-progress-ui.is-active{display:block}
+            #asss-progress-ui .asss-progress-title{font-size:14px;font-weight:700;margin:0 0 5px}
+            #asss-progress-ui .asss-progress-message{margin:0 0 11px;color:#50575e}
+            #asss-progress-ui .asss-progress-track{height:8px;background:#dcdcde;border-radius:999px;overflow:hidden;position:relative}
+            #asss-progress-ui .asss-progress-bar{position:absolute;inset:0 auto 0 0;width:38%;background:#2271b1;border-radius:999px;animation:asss-progress-slide 1.15s ease-in-out infinite}
+            #asss-progress-ui .asss-progress-meta{display:flex;justify-content:space-between;gap:12px;margin-top:8px;font-size:12px;color:#646970}
+            @keyframes asss-progress-slide{0%{transform:translateX(-110%)}100%{transform:translateX(290%)}}
+            @media (prefers-reduced-motion:reduce){#asss-progress-ui .asss-progress-bar{animation-duration:2.4s}}
+            @media (max-width:782px){#asss-progress-ui{top:58px;right:12px;width:calc(100vw - 24px)}}
+        </style>';
+        echo '<div id="asss-progress-ui" role="status" aria-live="polite" aria-atomic="true">
+            <p class="asss-progress-title">Supplier Sync is working</p>
+            <p class="asss-progress-message" id="asss-progress-message">Starting request…</p>
+            <div class="asss-progress-track" aria-hidden="true"><div class="asss-progress-bar"></div></div>
+            <div class="asss-progress-meta"><span id="asss-progress-detail">Please keep this page open.</span><span id="asss-progress-time">0s</span></div>
+        </div>';
+        echo '<script>
+        document.addEventListener("DOMContentLoaded",function(){
+            const heavyActions={
+                asss_import_style:"Creating or updating the WooCommerce product…",
+                asss_link_sanmar_existing:"Linking SanMar and synchronizing the product…",
+                asss_import_ss_style:"Creating or updating the WooCommerce product…",
+                asss_link_ss_existing:"Linking S&S and synchronizing the product…",
+                asss_import_momentec_style:"Creating or updating the WooCommerce product…",
+                asss_link_momentec_existing:"Linking Momentec and synchronizing the product…",
+                asss_quick_repair_product:"Repairing and synchronizing the product…",
+                asss_sync_products:"Running product sync and repair…",
+                asss_sync_inventory:"Updating supplier inventory…"
+            };
+            const panel=document.getElementById("asss-progress-ui");
+            const message=document.getElementById("asss-progress-message");
+            const detail=document.getElementById("asss-progress-detail");
+            const time=document.getElementById("asss-progress-time");
+
+            function resolveAction(form,submitter){
+                if(submitter&&submitter.name&&heavyActions[submitter.name]) return submitter.name;
+                for(const name of Object.keys(heavyActions)){
+                    if(form.querySelector("[name=\""+name+"\"]")) return name;
+                }
+                return "";
+            }
+
+            document.addEventListener("submit",function(event){
+                const form=event.target;
+                if(!(form instanceof HTMLFormElement)) return;
+                const action=resolveAction(form,event.submitter);
+                if(!action) return;
+                if(form.dataset.asssBusy==="1"){
+                    event.preventDefault();
+                    return;
+                }
+                form.dataset.asssBusy="1";
+
+                const submitter=event.submitter;
+                if(submitter&&submitter.name&&heavyActions[submitter.name]){
+                    const preserve=document.createElement("input");
+                    preserve.type="hidden";
+                    preserve.name=submitter.name;
+                    preserve.value=submitter.value||"1";
+                    form.appendChild(preserve);
+                }
+
+                if(panel){
+                    message.textContent=heavyActions[action];
+                    detail.textContent="Please keep this page open. Large styles can take a little while.";
+                    time.textContent="0s";
+                    panel.classList.add("is-active");
+                }
+
+                let seconds=0;
+                window.setInterval(function(){
+                    seconds++;
+                    if(time) time.textContent=seconds+"s";
+                    if(seconds===10&&detail) detail.textContent="Still working — product data and exact variations are being processed.";
+                    if(seconds===30&&detail) detail.textContent="Still working normally. Large products with many colors/images can take a minute or two.";
+                },1000);
+
+                form.querySelectorAll("button,input[type=submit]").forEach(function(control){
+                    if(control===submitter&&control.tagName==="BUTTON") control.textContent="Working…";
+                    control.disabled=true;
+                    control.setAttribute("aria-disabled","true");
+                });
+            },true);
+        });
+        </script>';
     }
 
     private function wrap_end(): void {
